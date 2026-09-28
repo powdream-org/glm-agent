@@ -58,3 +58,15 @@
 
 - `git diff --cached --check` → `new blank line at EOF`로 첫 시도 실패. 파일 끝의
   불필요한 빈 줄을 제거하고 재검사한다.
+- 원장 첫 커밋: `253d9bc` (`docs: open the GLM worker plugin ledger`).
+- 설계 문서 작성:
+  `superpowers/specs/2026-09-28-glm-worker-plugin-routing-design.md` (369행).
+- spec self-review:
+  - `TBD|TODO|implement later` placeholder 검색 결과 없음.
+  - CLI/plugin/marketplace version을 `0.2.0`으로 맞추고 parity test와 단일 bump
+    script를 두는 것으로 일관성 확인.
+  - custom agent가 worktree를 소유하지 않으며 SDD가 병렬성과 provider routing을
+    소유하는 것으로 책임 경계 확인.
+  - quota fallback은 Z.ai code `1113`, `1308`, `1310`, `1316`–`1321`로 제한하고
+    단기 rate limit·model 미지원·인증·worker protocol 오류와 분리.
+- `git diff --check` → 통과.
