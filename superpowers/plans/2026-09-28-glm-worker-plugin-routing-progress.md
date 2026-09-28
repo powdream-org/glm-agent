@@ -96,3 +96,4 @@
 - CLI는 `role=explorer|general-purpose`를 worker meta에 저장하고 `send`에서
   원래 role을 유지한다. 공통 durable-result prompt와 role prompt는 별도 Markdown
   파일에서 매 turn 직접 읽는다.
+- 반영 커밋: `db662d7` (`docs: split GLM workers by role`).
