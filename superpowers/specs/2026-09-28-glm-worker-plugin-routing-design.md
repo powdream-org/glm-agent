@@ -238,6 +238,9 @@ subagent 좌석을 만들기로 결정한 시점마다 provider를 한 번 더 �
 - 사용자 의도 해석, 설계 ruling, 안전·권한 판단
 - provider 자체나 GLM wrapper/plugin을 고치는 작업
 - Claude 전용 기능이나 현재 대화 문맥에 강하게 의존하는 작업
+- 현재 Claude Code 세션에 연결된 connector/MCP 도구를 사용해야 하는 작업.
+  GLM bridge는 `Bash, Read`만 받으며 부모 세션의 MCP 도구·연결·인증 상태를
+  내부 GLM session으로 전달하지 않는다.
 - GLM이 같은 원인으로 반복 실패했고 quota 문제가 아닌 작업
 - 최종 독립 리뷰처럼 provider 다양성이 검증 가치가 되는 작업
 
@@ -325,6 +328,8 @@ commit/tag/push는 bump script의 책임에 넣지 않는다.
 - `agents/glm-worker.md` frontmatter와 최소 tool/model 설정 검증
 - agent prompt에 start/send 지속성, 명시적 close, worktree 비소유,
   `${CLAUDE_PLUGIN_ROOT}` 실행 경로가 들어 있는지 검증
+- `my-superpowers` routing 예제에서 connector/MCP가 필요한 태스크가 native
+  Claude를 선택하는지 검증
 - 지원되는 Claude Code에서는 `claude plugin validate .` 실행
 
 ### 실제 smoke test

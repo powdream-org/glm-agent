@@ -71,3 +71,12 @@
     단기 rate limit·model 미지원·인증·worker protocol 오류와 분리.
 - `git diff --check` → 통과.
 - 설계 문서 커밋: `d383ba5` (`docs: design the GLM worker plugin routing`).
+
+### spec 검토 반영 — connector MCP
+
+- User 결정: Claude Code의 connector MCP를 사용하는 작업은 native Claude를
+  우선한다.
+- 근거: 설계된 `glm-agent:glm-worker` bridge의 tool surface는 `Bash, Read`이고,
+  부모 Claude Code 세션의 MCP 도구·연결·인증 상태를 내부 GLM session에
+  전달하는 계약이 없다.
+- spec의 provider 선택 정책과 테스트 전략에 이 조건을 추가했다.
