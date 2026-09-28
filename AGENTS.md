@@ -21,6 +21,7 @@ Claude JSON, and stderr belong under the worker directory.
   directly at the start of every worker turn.
 - `tests/test_glm_agent.sh`: hermetic CLI tests using a fake `claude` binary.
 - `README.md`: public installation, usage, behavior, and security documentation.
+- `LICENSE`: MIT License terms for the project.
 - `CLAUDE.md`: compatibility symlink; never replace it with an independent copy.
 
 ## Behavioral invariants

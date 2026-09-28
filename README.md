@@ -186,5 +186,4 @@ See [AGENTS.md](AGENTS.md) for repository invariants and contribution rules.
 
 ## License
 
-No license has been added yet. Until one is selected, normal copyright rules
-apply even though the repository is public.
+[MIT](LICENSE) © 2026 Heejoon Kang
