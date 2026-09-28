@@ -104,3 +104,13 @@
 - 해석: 현재 spec을 승인하고 Superpowers 구현 절차로 전환한다.
 - `superpowers:writing-plans`에 따라 제품 코드보다 먼저 implementation plan을
   작성한다. plan 검토 전에는 구현 파일을 변경하지 않는다.
+- 계획 문서 작성:
+  `superpowers/plans/2026-09-28-glm-worker-plugin-routing.md` (875행, 6 tasks).
+- plan self-review:
+  - spec의 role persistence, prompt 직접 읽기, quota code 분류, marketplace/plugin,
+    버전 parity, `my-superpowers`, connector/MCP native routing을 task에 매핑했다.
+  - 서로 다른 cwd의 explorer·general-purpose worker를 동시에 시작하는 hermetic
+    병렬 테스트를 Task 1에 포함했다.
+  - worktree 실행 시 primary checkout을 잘못 검사하지 않도록 install smoke가
+    `git rev-parse --show-toplevel`을 사용한다.
+  - placeholder 금지 표현 검색 결과 없음. `git diff --check` 통과.
