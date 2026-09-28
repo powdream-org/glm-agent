@@ -115,3 +115,16 @@
     `git rev-parse --show-toplevel`을 사용한다.
   - placeholder 금지 표현 검색 결과 없음. `git diff --check` 통과.
 - 계획 커밋: `fb24969` (`docs: plan the GLM worker plugin implementation`).
+
+### Native 구현 실행 준비
+
+- User가 Native 실행을 승인했다. 별도 구현 subagent 없이 현재 세션에서 계획의
+  Task 1~6을 연속 실행한다.
+- 구현은 저장소 내부 `.worktrees/glm-worker-plugin`의 격리 worktree와
+  `feat/glm-worker-plugin` 브랜치에서 진행한다. `.worktrees/`는 repository
+  추적 대상에서 제외한다.
+- Ruling: `superpowers:executing-plans`의 `.superpowers/sdd` helper workspace는
+  User의 명시적인 repository-local `.superpowers` 금지와 충돌하므로 사용하지
+  않는다. 대신 이 committed 작업 원장과 plan의 Task heading으로 동일한 진행
+  상태와 검증 증거를 기록한다. 이 판단이 틀렸을 때의 비용은 helper가 생성하는
+  brief/test-log 자동화가 없다는 것이며, 구현 결과물이나 검증 범위는 줄이지 않는다.
