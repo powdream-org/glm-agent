@@ -215,3 +215,34 @@
   바꿨다.
 - 검증: CLI test 220/220, plugin test 27/27, 관련 Bash 문법·shellcheck와 Claude
   strict validation 통과.
+
+### Task 6 — 최종 검증 (2026-09-28 20:03 JST)
+
+- committed HEAD 전체 gate:
+  - `bash tests/test_glm_agent.sh` → 220/220 통과.
+  - `bash tests/test_plugin.sh` → 27/27 통과.
+  - `bash -n glm-agent tests/test_glm_agent.sh tests/test_plugin.sh scripts/bump-version.sh`
+    → 통과.
+  - `shellcheck glm-agent tests/test_glm_agent.sh tests/test_plugin.sh scripts/bump-version.sh`
+    → 통과.
+  - `claude plugin validate --strict .` → `✔ Validation passed`.
+  - `git diff --check` → 통과, worktree clean.
+- version parity: CLI/plugin/marketplace 모두 `0.2.0`.
+- 격리 install smoke:
+  - `CLAUDE_CONFIG_DIR=/tmp/glm-agent-plugin-smoke.BappcV/claude`.
+  - local marketplace add 및 `glm-agent@glm-agent --scope user` 설치 성공.
+  - inventory: Agents 2 (`explorer`, `general-purpose`), Skills/Hooks/MCP/LSP 0,
+    version `0.2.0`.
+- 실제 Z.ai persistence smoke:
+  - 임시 repo `/tmp/glm-agent-live.9kHIu5`.
+  - worker `20260928T105704Z-11018-26715`, role `explorer`, model `haiku`.
+  - start turn 1 `DONE`, send turn 2 `DONE`, 두 turn 모두 fallback false.
+  - status에서 session ID 비노출과 원래 cwd/role/model 유지 확인 후 explicit close;
+    history는 `~/.glm/workers/20260928T105704Z-11018-26715`에 보존.
+- GitHub 확인: `powdream-org/glm-agent`는 PUBLIC, default branch `main`, remote도
+  `https://github.com/powdream-org/glm-agent.git`. `gh`에는 active
+  `heejoon-toridori`와 inactive `powdream` 두 계정이 있으므로 push 시 요청대로
+  `powdream` 계정을 명시적으로 선택해야 한다.
+- 별도 subagent reviewer는 Native 실행 선택과 현재 subagent 생성 금지 규칙 때문에
+  호출하지 않았다. 대신 승인 spec 각 절과 branch diff를 직접 대조했고, 그 과정에서
+  `MODEL`/invalid model 계약 누락을 발견해 위의 self-review 보완 커밋으로 수정했다.
