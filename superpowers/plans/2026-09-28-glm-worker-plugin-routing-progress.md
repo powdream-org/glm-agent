@@ -114,3 +114,4 @@
   - worktree 실행 시 primary checkout을 잘못 검사하지 않도록 install smoke가
     `git rev-parse --show-toplevel`을 사용한다.
   - placeholder 금지 표현 검색 결과 없음. `git diff --check` 통과.
+- 계획 커밋: `fb24969` (`docs: plan the GLM worker plugin implementation`).
