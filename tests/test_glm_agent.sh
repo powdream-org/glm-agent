@@ -13,13 +13,15 @@ OTHER_PROJECT="$TEST_ROOT/other-project"
 FAKE_BIN="$TEST_ROOT/bin"
 FAKE_LOG="$TEST_ROOT/claude.log"
 TEST_SYSTEM_PROMPT="$TEST_ROOT/system-prompt.md"
+TEST_ROLE_PROMPTS_DIR="$TEST_ROOT/prompts"
 
 cleanup() {
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
 
-mkdir -p "$TEST_HOME" "$PROJECT" "$OTHER_PROJECT" "$FAKE_BIN"
+mkdir -p "$TEST_HOME" "$PROJECT" "$OTHER_PROJECT" "$FAKE_BIN" \
+  "$TEST_ROLE_PROMPTS_DIR"
 PROJECT="$(cd "$PROJECT" && pwd -P)"
 OTHER_PROJECT="$(cd "$OTHER_PROJECT" && pwd -P)"
 
@@ -89,6 +91,15 @@ done
     *'TEST_PROMPT_REVISION=two'*) printf '%s\n' 'prompt_revision=two' ;;
     *) printf '%s\n' 'prompt_revision=unknown' ;;
   esac
+  case "$append_prompt" in
+    *'ROLE=explorer'*) printf '%s\n' 'role_prompt=explorer' ;;
+    *'ROLE=general-purpose'*) printf '%s\n' 'role_prompt=general-purpose' ;;
+    *) printf '%s\n' 'role_prompt=missing' ;;
+  esac
+  case "$append_prompt" in
+    *'ROLE_PROMPT_REVISION=two'*) printf '%s\n' 'role_prompt_revision=two' ;;
+    *) printf '%s\n' 'role_prompt_revision=one' ;;
+  esac
 } >>"$FAKE_CLAUDE_LOG"
 
 if [[ -z "${GLM_RESULT_FILE:-}" ]]; then
@@ -135,6 +146,7 @@ export GLM_AGENT_HOME="$TEST_HOME/.glm"
 export FAKE_CLAUDE_LOG="$FAKE_LOG"
 export CLAUDECODE=1
 export GLM_SYSTEM_PROMPT_FILE="$TEST_SYSTEM_PROMPT"
+export GLM_ROLE_PROMPTS_DIR="$TEST_ROLE_PROMPTS_DIR"
 
 write_test_system_prompt() {
   local revision="$1"
@@ -146,6 +158,16 @@ EOF
 }
 
 write_test_system_prompt one
+
+write_test_role_prompts() {
+  local revision="$1"
+  printf 'ROLE=explorer\nROLE_PROMPT_REVISION=%s\n' "$revision" \
+    >"$TEST_ROLE_PROMPTS_DIR/explorer.md"
+  printf 'ROLE=general-purpose\nROLE_PROMPT_REVISION=%s\n' "$revision" \
+    >"$TEST_ROLE_PROMPTS_DIR/general-purpose.md"
+}
+
+write_test_role_prompts one
 
 failures=0
 tests=0
@@ -262,7 +284,8 @@ fi
 assert_eq 'start succeeds for DONE result' '0' "$start_rc"
 worker_id="$(printf '%s\n' "$start_output" | sed -n 's/^WORKER_ID=//p')"
 result_path="$(printf '%s\n' "$start_output" | sed -n 's/^RESULT=//p')"
-assert_contains 'start returns compact DONE status' "$start_output" $'TURN=1\nSTATUS=DONE\nRESULT='
+assert_contains 'start returns compact DONE status' "$start_output" \
+  $'TURN=1\nROLE=general-purpose\nSTATUS=DONE\nRESULT='
 assert_not_contains 'start does not print session id' "$start_output" 'SESSION_ID='
 assert_file 'start creates task.md' "$GLM_AGENT_HOME/workers/$worker_id/task.md"
 assert_file 'start preserves raw response' "$GLM_AGENT_HOME/workers/$worker_id/turns/0001/response.json"
@@ -277,6 +300,7 @@ assert_eq 'result ends with exact DONE marker' 'STATUS: DONE' "$(tail -n 1 "$res
 meta="$GLM_AGENT_HOME/workers/$worker_id/meta"
 assert_eq 'start stores original cwd' "$PROJECT" "$(meta_get_test "$meta" cwd)"
 assert_eq 'start stores default model' 'sonnet' "$(meta_get_test "$meta" model)"
+assert_eq 'start stores default role' 'general-purpose' "$(meta_get_test "$meta" role)"
 assert_eq 'start stores session' 'session-1' "$(meta_get_test "$meta" claude_session_id)"
 assert_eq 'start stores semantic status' 'DONE' "$(meta_get_test "$meta" status)"
 start_log="$(cat "$FAKE_LOG")"
@@ -286,12 +310,18 @@ assert_contains 'start appends worker contract' "$start_log" 'contract=present'
 assert_contains 'start enables autonomous headless execution' "$start_log" 'permission_bypass=yes'
 assert_contains 'start tells worker the exact result path' "$start_log" 'result_path_in_prompt=yes'
 assert_contains 'start reads the configured prompt source' "$start_log" 'prompt_revision=one'
+assert_contains 'default role prompt is loaded' "$start_log" 'role_prompt=general-purpose'
 assert_contains 'start keeps 1M compact window' "$start_log" 'compact=1000000'
 assert_contains 'start disables nonessential traffic' "$start_log" 'nonessential=1'
 assert_contains 'start keeps API timeout' "$start_log" 'timeout=3000000'
 
+capture "$SCRIPT" start --role invalid --cwd "$PROJECT" 'must not start'
+assert_eq 'invalid role is rejected' '2' "$RC"
+assert_contains 'invalid role error is clear' "$STDERR" 'invalid role: invalid'
+
 : >"$FAKE_LOG"
 write_test_system_prompt two
+write_test_role_prompts two
 send_stderr="$TEST_ROOT/send.stderr"
 if send_output="$(
   cd "$OTHER_PROJECT"
@@ -302,7 +332,8 @@ else
   send_rc=$?
 fi
 assert_eq 'send treats BLOCKED as a valid turn' '0' "$send_rc"
-assert_contains 'send returns compact BLOCKED status' "$send_output" $'TURN=2\nSTATUS=BLOCKED\nRESULT='
+assert_contains 'send returns compact BLOCKED status' "$send_output" \
+  $'TURN=2\nROLE=general-purpose\nSTATUS=BLOCKED\nRESULT='
 send_result="$(printf '%s\n' "$send_output" | sed -n 's/^RESULT=//p')"
 assert_eq 'send result ends with exact BLOCKED marker' 'STATUS: BLOCKED' "$(tail -n 1 "$send_result")"
 send_log="$(cat "$FAKE_LOG")"
@@ -310,6 +341,8 @@ assert_contains 'send resumes stored session' "$send_log" 'resume=session-1'
 assert_contains 'send uses original cwd' "$send_log" "cwd=$PROJECT"
 assert_contains 'send uses original model' "$send_log" 'model=sonnet'
 assert_contains 'send reads the latest prompt source' "$send_log" 'prompt_revision=two'
+assert_contains 'send reads the latest role prompt source' "$send_log" 'role_prompt_revision=two'
+assert_contains 'send retains default role prompt' "$send_log" 'role_prompt=general-purpose'
 assert_eq 'send advances stored turn' '2' "$(meta_get_test "$meta" turn)"
 assert_eq 'send updates stored status' 'BLOCKED' "$(meta_get_test "$meta" status)"
 
@@ -326,6 +359,54 @@ capture "$SCRIPT" list
 assert_eq 'list succeeds' '0' "$RC"
 assert_contains 'list includes worker and state' "$OUTPUT" "$worker_id"
 assert_contains 'list includes latest status' "$OUTPUT" 'BLOCKED'
+
+: >"$FAKE_LOG"
+capture "$SCRIPT" start --role explorer --model haiku --cwd "$OTHER_PROJECT" \
+  'inspect the repository without changing it'
+assert_eq 'explorer start succeeds' '0' "$RC"
+explorer_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+assert_contains 'explorer start reports role' "$OUTPUT" 'ROLE=explorer'
+explorer_meta="$GLM_AGENT_HOME/workers/$explorer_id/meta"
+assert_eq 'explorer role is stored' 'explorer' \
+  "$(meta_get_test "$explorer_meta" role)"
+explorer_start_log="$(cat "$FAKE_LOG")"
+assert_contains 'explorer role prompt is loaded' "$explorer_start_log" \
+  'role_prompt=explorer'
+
+: >"$FAKE_LOG"
+capture "$SCRIPT" send "$explorer_id" 'continue the same investigation'
+assert_eq 'explorer send succeeds' '0' "$RC"
+assert_contains 'explorer send reports stored role' "$OUTPUT" 'ROLE=explorer'
+assert_eq 'explorer send preserves model' 'haiku' \
+  "$(meta_get_test "$explorer_meta" model)"
+assert_eq 'explorer send preserves cwd' "$OTHER_PROJECT" \
+  "$(meta_get_test "$explorer_meta" cwd)"
+explorer_send_log="$(cat "$FAKE_LOG")"
+assert_contains 'explorer send keeps role prompt' "$explorer_send_log" \
+  'role_prompt=explorer'
+
+parallel_one="$TEST_ROOT/parallel-one"
+parallel_two="$TEST_ROOT/parallel-two"
+mkdir -p "$parallel_one" "$parallel_two"
+"$SCRIPT" start --role explorer --model haiku --cwd "$parallel_one" \
+  'inspect worker one' >"$TEST_ROOT/parallel-one.out" &
+pid_one=$!
+"$SCRIPT" start --role general-purpose --model sonnet --cwd "$parallel_two" \
+  'inspect worker two' >"$TEST_ROOT/parallel-two.out" &
+pid_two=$!
+wait "$pid_one"
+wait "$pid_two"
+parallel_id_one="$(sed -n 's/^WORKER_ID=//p' "$TEST_ROOT/parallel-one.out")"
+parallel_id_two="$(sed -n 's/^WORKER_ID=//p' "$TEST_ROOT/parallel-two.out")"
+if [[ "$parallel_id_one" != "$parallel_id_two" ]]; then
+  pass 'parallel starts create distinct workers'
+else
+  fail 'parallel starts create distinct workers' "duplicate id: $parallel_id_one"
+fi
+assert_contains 'parallel explorer keeps role' \
+  "$(cat "$TEST_ROOT/parallel-one.out")" 'ROLE=explorer'
+assert_contains 'parallel general worker keeps role' \
+  "$(cat "$TEST_ROOT/parallel-two.out")" 'ROLE=general-purpose'
 
 : >"$FAKE_LOG"
 capture "$SCRIPT" send "$worker_id" 'MISSING_RESULT'

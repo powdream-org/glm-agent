@@ -133,3 +133,12 @@
   `feat/glm-worker-plugin`.
 - 구현 전 기준선: `bash tests/test_glm_agent.sh` 91/91 통과,
   `bash -n glm-agent tests/test_glm_agent.sh` 통과, shellcheck 통과.
+
+### Task 1 — 역할 인식 지속 worker
+
+- RED: 기존 CLI에서 `role` metadata와 role prompt가 없고 `--role`이 unknown
+  option으로 거부되는 것을 확인했다.
+- GREEN: `explorer|general-purpose` 역할 검증·저장·출력, 매 turn의 별도 role
+  prompt 직접 읽기, `send` 역할 유지, 서로 다른 cwd에서의 병렬 worker 생성을
+  구현했다.
+- 검증: `tests/test_glm_agent.sh` 109/109 통과, Bash 문법 검사와 shellcheck 통과.

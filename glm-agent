@@ -5,6 +5,8 @@ PROGRAM="${0##*/}"
 VERSION="0.2.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
+ROLE_PROMPTS_DIR="${GLM_ROLE_PROMPTS_DIR:-$SCRIPT_DIR/prompts}"
+DEFAULT_ROLE="${GLM_ROLE:-general-purpose}"
 
 GLM_AGENT_HOME="${GLM_AGENT_HOME:-$HOME/.glm}"
 if [[ "$GLM_AGENT_HOME" != /* ]]; then
@@ -158,6 +160,17 @@ validate_worker_id() {
     die "invalid worker id: $worker_id"
 }
 
+validate_role() {
+  case "$1" in
+    explorer|general-purpose) return 0 ;;
+    *) die "invalid role: $1" ;;
+  esac
+}
+
+role_prompt_file() {
+  printf '%s/%s.md\n' "$ROLE_PROMPTS_DIR" "$1"
+}
+
 ensure_state_home() {
   mkdir -p "$GLM_AGENT_HOME"
   chmod 700 "$GLM_AGENT_HOME"
@@ -253,6 +266,7 @@ print_turn_control() {
 
   printf 'WORKER_ID=%s\n' "$(meta_get "$dir" worker_id)"
   printf 'TURN=%s\n' "$turn"
+  printf 'ROLE=%s\n' "$(meta_get "$dir" role)"
   printf 'STATUS=%s\n' "$status"
   printf 'RESULT=%s\n' "$result_file"
 }
@@ -288,6 +302,9 @@ run_turn() {
   local returned_session_id
   local result_status
   local system_prompt
+  local role
+  local role_prompt_path
+  local role_prompt
   local -a args
 
   require_execution_dependencies
@@ -296,17 +313,26 @@ run_turn() {
 
   dir="$(worker_dir "$worker_id")"
   model="$(meta_get "$dir" model)"
+  role="$(meta_get "$dir" role)"
   cwd="$(meta_get "$dir" cwd)"
   current_turn="$(meta_get "$dir" turn)"
   session_id="$(meta_get "$dir" claude_session_id)"
 
   [[ -n "$model" ]] || die "worker has no model: $worker_id"
+  validate_role "$role"
   [[ -n "$cwd" ]] || die "worker has no working directory: $worker_id"
   [[ -d "$cwd" ]] || die "worker working directory does not exist: $cwd"
   [[ "$current_turn" =~ ^[0-9]+$ ]] ||
     die "worker has invalid turn metadata: $worker_id"
   require_system_prompt_file
+  role_prompt_path="$(role_prompt_file "$role")"
+  [[ -r "$role_prompt_path" && -s "$role_prompt_path" ]] ||
+    die "role prompt file is missing, unreadable, or empty: $role_prompt_path"
   system_prompt="$(<"$SYSTEM_PROMPT_FILE")"
+  role_prompt="$(<"$role_prompt_path")"
+  system_prompt+=$'\n\n<worker_role>\n'
+  system_prompt+="$role_prompt"
+  system_prompt+=$'\n</worker_role>'
 
   turn="$((10#$current_turn + 1))"
   printf -v turn_label '%04d' "$turn"
@@ -434,6 +460,7 @@ cmd_run() {
 
 cmd_start() {
   local model="$CLAUDE_MODEL"
+  local role="$DEFAULT_ROLE"
   local cwd="$PWD"
 
   while (($#)); do
@@ -441,6 +468,11 @@ cmd_start() {
       --model)
         (($# >= 2)) || die "--model requires a value"
         model="$2"
+        shift 2
+        ;;
+      --role)
+        (($# >= 2)) || die "--role requires a value"
+        role="$2"
         shift 2
         ;;
       --cwd)
@@ -466,6 +498,8 @@ cmd_start() {
 
   validate_single_line "model" "$model"
   [[ -n "$model" ]] || die "model must not be empty"
+  validate_single_line "role" "$role"
+  validate_role "$role"
   [[ -d "$cwd" ]] || die "working directory does not exist: $cwd"
   cwd="$(cd "$cwd" && pwd -P)"
   validate_single_line "working directory" "$cwd"
@@ -492,6 +526,7 @@ cmd_start() {
 worker_id=$worker_id
 claude_session_id=
 model=$model
+role=$role
 cwd=$cwd
 turn=0
 status=NEW
@@ -548,6 +583,7 @@ cmd_status() {
   printf 'STATUS=%s\n' "$(meta_get "$dir" status)"
   printf 'TURN=%s\n' "$(meta_get "$dir" turn)"
   printf 'MODEL=%s\n' "$(meta_get "$dir" model)"
+  printf 'ROLE=%s\n' "$(meta_get "$dir" role)"
   printf 'CWD=%s\n' "$(meta_get "$dir" cwd)"
   printf 'CLOSED=%s\n' "$(meta_get "$dir" closed)"
   printf 'RESULT=%s\n' "$(meta_get "$dir" latest_result)"
@@ -560,10 +596,11 @@ cmd_list() {
   local dir
   for dir in "$WORKERS_DIR"/*; do
     [[ -f "$dir/meta" ]] || continue
-    printf 'WORKER_ID=%s\tSTATUS=%s\tTURN=%s\tCLOSED=%s\tCWD=%s\n' \
+    printf 'WORKER_ID=%s\tSTATUS=%s\tTURN=%s\tROLE=%s\tCLOSED=%s\tCWD=%s\n' \
       "$(meta_get "$dir" worker_id)" \
       "$(meta_get "$dir" status)" \
       "$(meta_get "$dir" turn)" \
+      "$(meta_get "$dir" role)" \
       "$(meta_get "$dir" closed)" \
       "$(meta_get "$dir" cwd)"
   done
