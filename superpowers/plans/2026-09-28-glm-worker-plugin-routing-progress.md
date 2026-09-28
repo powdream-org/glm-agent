@@ -246,3 +246,13 @@
 - 별도 subagent reviewer는 Native 실행 선택과 현재 subagent 생성 금지 규칙 때문에
   호출하지 않았다. 대신 승인 spec 각 절과 branch diff를 직접 대조했고, 그 과정에서
   `MODEL`/invalid model 계약 누락을 발견해 위의 self-review 보완 커밋으로 수정했다.
+
+### main 공개 반영
+
+- `feat/glm-worker-plugin`을 로컬 `main`에 `--ff-only`로 통합했다.
+- 병합된 `main`에서 CLI 220/220, plugin 27/27, Bash 문법, shellcheck,
+  `claude plugin validate --strict .`, `git diff --check`를 다시 실행해 모두 통과했다.
+- `gh auth switch --user powdream` 후 `gh api user`가 `powdream`임을 확인하고
+  `origin/main`에 push했다. 원격 HEAD는
+  `b12e4ae961092555c0104a9e718a4bee11358015`로 로컬과 일치했다.
+- push 후 active `gh` account는 기존 `heejoon-toridori`로 복원했다.
