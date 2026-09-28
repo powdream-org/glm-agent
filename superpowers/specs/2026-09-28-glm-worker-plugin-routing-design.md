@@ -14,7 +14,8 @@ Superpowers SDD가 native Claude subagent와 지속형 GLM worker 중 적합한 
 
 성공 조건은 다음과 같다.
 
-1. Claude Code가 plugin의 `glm-agent:glm-worker` custom agent를 발견한다.
+1. Claude Code가 plugin의 `glm-agent:explorer`와
+   `glm-agent:general-purpose` custom agent를 발견한다.
 2. 하나의 GLM worker에 여러 지시를 보내도 같은 `worker_id`, 작업 디렉터리,
    논리 모델, Claude session이 유지된다.
 3. Opus/Sonnet/Haiku 논리 등급을 worker 생성 시 선택할 수 있다.
@@ -31,7 +32,7 @@ Superpowers SDD가 native Claude subagent와 지속형 GLM worker 중 적합한 
 ### 포함
 
 - 이 리포 자체를 Claude Code marketplace 겸 plugin으로 패키징
-- 지속 worker를 조작하는 custom agent 한 개
+- 지속 worker를 조작하는 역할별 custom agent 두 개
 - CLI의 provider 오류 분류와 compact control-plane 출력 확장
 - CLI/plugin/marketplace 버전 동기화 도구와 검증
 - 설치·사용·Superpowers 연동 문서
@@ -52,7 +53,7 @@ Superpowers SDD가 native Claude subagent와 지속형 GLM worker 중 적합한 
   하나의 설치 단위로 묶으며, marketplace는
   `.claude-plugin/marketplace.json`에서 plugin source를 가리킨다.
 - plugin agent는 `<plugin-name>:<agent-name>`으로 노출된다. 따라서 이 설계의
-  agent 식별자는 `glm-agent:glm-worker`다.
+  agent 식별자는 `glm-agent:explorer`와 `glm-agent:general-purpose`다.
 - custom subagent 호출은 기본적으로 새 인스턴스를 만들지만, 완료 시 받은 agent
   ID로 같은 subagent를 재개할 수 있다. 재개된 subagent는 이전 대화와 tool call
   기록을 보존한다.
@@ -78,32 +79,49 @@ Superpowers SDD / my-superpowers
   ├─ 논리 등급 선택: opus | sonnet | haiku
   └─ provider 선택
        ├─ native Claude agent
-       └─ glm-agent:glm-worker (Haiku bridge)
-            └─ ${CLAUDE_PLUGIN_ROOT}/glm-agent
+       └─ GLM provider
+            ├─ glm-agent:explorer (Haiku bridge, role=explorer)
+            └─ glm-agent:general-purpose (Haiku bridge, role=general-purpose)
+                 ↓
+            ${CLAUDE_PLUGIN_ROOT}/glm-agent
                  └─ Z.ai Claude Code session
                       ├─ turn 1: start
                       ├─ turn 2..N: send --resume
                       └─ 명시적 close
 ```
 
-### 4.1 하나의 parameterized custom agent
+### 4.1 역할별 custom agent 두 개
 
-plugin에는 `agents/glm-worker.md` 하나만 둔다. Opus/Sonnet/Haiku별 agent 파일을
-세 벌 만들지 않는다. 위임 prompt가 `GLM_MODEL=opus|sonnet|haiku`를 전달하고,
-bridge가 첫 turn에서만 `glm-agent start --model <alias>`를 호출한다. 후속 turn은
-`send`를 사용하므로 CLI에 저장된 원래 모델을 그대로 재사용한다.
+plugin에는 모델별 agent가 아니라 역할별 agent 두 개를 둔다.
 
-custom agent 자체의 Claude model은 `haiku`로 고정한다. 이 agent는 구현 판단을
-하지 않고 CLI를 안전하게 호출하고 control-plane 결과만 돌려주는 얇은 bridge다.
-여기에서 선택하는 Haiku는 bridge 실행 비용이며, `GLM_MODEL`은 실제 Z.ai worker
-모델이다. 두 값을 혼동하지 않는다.
+| agent | 역할 | 기본 GLM 모델 |
+| --- | --- | --- |
+| `glm-agent:explorer` | 코드 검색, 구조 파악, 영향 범위 조사, 사실 수집 | `haiku` |
+| `glm-agent:general-purpose` | 구현, 수정, 테스트, 디버깅 | `sonnet` |
+
+두 agent 모두 위임 prompt의 `GLM_MODEL=opus|sonnet|haiku`로 기본값을 바꿀 수
+있다. bridge는 첫 turn에서만 `glm-agent start --role <role> --model <alias>`를
+호출한다. 후속 turn은 `send`를 사용하므로 CLI에 저장된 원래 역할과 모델을
+그대로 재사용한다.
+
+`explorer`는 보안 sandbox가 아니라 행동 전문화다. 코드베이스 탐색에 필요한
+`Bash`, `Grep`, `Glob`, `Read`와 다른 Claude Code 도구를 내부 GLM session에서
+사용할 수 있고, 해당 session도 `--dangerously-skip-permissions`로 실행한다.
+코드 변경을 하지 않는 것은 system prompt의 행동 계약이며 permission layer가
+강제하지 않는다. 오케스트레이터는 explorer 완료 후 예상하지 않은 diff가
+없는지 확인한다.
+
+두 custom agent 자체의 Claude model은 `haiku`로 고정한다. 이 agent들은 작업을
+직접 수행하지 않고 CLI를 호출하고 control-plane 결과만 돌려주는 얇은
+bridge다. 여기에서 선택하는 Haiku는 bridge 실행 비용이며, `GLM_MODEL`은 실제
+Z.ai worker 모델이다. 두 값을 혼동하지 않는다.
 
 ### 4.2 이중 지속성
 
 지속성은 두 층으로 취급한다.
 
 1. 가능하면 오케스트레이터는 Claude Code가 반환한 custom agent ID로 같은
-   `glm-worker` bridge를 재개한다.
+   역할의 bridge를 재개한다.
 2. 실제 작업 문맥의 기준은 CLI가 저장한 `worker_id`와
    `claude_session_id`다. bridge 재개가 불가능해도 새 bridge에 기존
    `WORKER_ID`를 넘기면 `glm-agent send`로 같은 GLM session을 계속한다.
@@ -130,7 +148,11 @@ custom agent는 worktree를 만들거나 branch를 바꾸지 않는다. 전달�
   marketplace.json
   plugin.json
 agents/
-  glm-worker.md
+  explorer.md
+  general-purpose.md
+prompts/
+  explorer.md
+  general-purpose.md
 scripts/
   bump-version.sh
 glm-agent
@@ -145,19 +167,28 @@ CLAUDE.md -> AGENTS.md
 
 `.claude-plugin/marketplace.json`의 source는 `./`이고, plugin과 marketplace의
 이름은 모두 `glm-agent`를 사용한다. plugin에는 v1에서 skill, hook, MCP server를
-넣지 않는다. custom agent만으로 필요한 entry point가 생기고, 별도
+넣지 않는다. 두 custom agent만으로 필요한 entry point가 생기고, 별도
 `/glm-agent:orchestrate`는 Superpowers SDD와 책임이 겹친다.
 
-`agents/glm-worker.md`는 최소한 다음 frontmatter를 사용한다.
+두 agent는 다음 형태의 frontmatter를 사용한다.
 
 ```yaml
 ---
-name: glm-worker
-description: Run or continue a persistent Z.ai GLM coding worker when the orchestrator explicitly chooses the GLM provider.
+name: explorer # 다른 파일은 general-purpose
+description: Run or continue a persistent Z.ai GLM explorer when the orchestrator chooses GLM for codebase research.
 tools: Bash, Read
 model: haiku
 ---
 ```
+
+이 frontmatter의 tool 목록은 CLI를 호출하는 바깥 bridge의 도구다. 실제 탐색을
+수행하는 내부 GLM session의 `Bash`, `Grep`, `Glob`, `Read`를 제한하지 않는다.
+
+`system-prompt.md`의 공통 durable-result 계약에 더해 `prompts/explorer.md` 또는
+`prompts/general-purpose.md`를 role prompt로 직접 읽는다. role prompt는 Bash
+문자열 안에 복제하지 않는다. explorer prompt는 조사·근거·비수정 원칙을,
+general-purpose prompt는 구현·검증 원칙을 정의한다. 두 role 모두 권한 자체는
+제한하지 않는다.
 
 agent는 plugin 안의 실행 파일을 PATH에서 찾지 않고 다음 절대 기준으로 호출한다.
 
@@ -174,6 +205,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/glm-agent" ...
 | 필드 | start | send | 의미 |
 | --- | --- | --- | --- |
 | `ACTION` | `start` | `send` | 실행할 CLI 동작 |
+| `ROLE` | agent가 결정 | 생략 | `explorer`, `general-purpose` |
 | `GLM_MODEL` | 필수 | 생략 | `opus`, `sonnet`, `haiku` |
 | `CWD` | 필수 | 생략 | SDD가 준비한 절대 worktree 경로 |
 | `WORKER_ID` | 없음 | 필수 | 지속 GLM worker 식별자 |
@@ -192,6 +224,7 @@ PROVIDER=glm
 WORKER_ID=<id>
 TURN=<number>
 MODEL=<logical-alias>
+ROLE=explorer|general-purpose
 STATUS=DONE|BLOCKED|INVALID
 RESULT=<absolute-result-path>
 ERROR_KIND=<empty-or-classification>
@@ -228,6 +261,8 @@ subagent 좌석을 만들기로 결정한 시점마다 provider를 한 번 더 �
 
 ### GLM을 우선 고려
 
+- 저장소 내부의 파일·심볼·참조·테스트 위치를 조사하는 작업은
+  `glm-agent:explorer`를 우선 고려
 - 범위와 산출물이 명확한 구현·수정 작업
 - 테스트나 정적 검사로 결과를 객관적으로 검증할 수 있는 작업
 - 독립 worktree에서 수행할 수 있고 외부 승인이 필요 없는 작업
@@ -247,7 +282,8 @@ subagent 좌석을 만들기로 결정한 시점마다 provider를 한 번 더 �
 선택은 모델 등급과 독립적이다. 예를 들어 “Sonnet 좌석”을 결정한 뒤 native
 Sonnet 또는 `GLM_MODEL=sonnet` 중 하나를 고른다. native 호출에는 실제 Agent
 `model`을 명시하고, GLM 호출에는 bridge의 Agent `model=haiku`와 prompt의
-`GLM_MODEL=<논리 등급>`을 각각 명시한다.
+`GLM_MODEL=<논리 등급>`을 각각 명시한다. GLM을 선택한 다음 조사에는
+`glm-agent:explorer`, 구현·수정에는 `glm-agent:general-purpose`를 사용한다.
 
 ## 9. quota 소진과 fallback
 
@@ -305,8 +341,10 @@ commit/tag/push는 bump script의 책임에 넣지 않는다.
 - API key는 기존 `~/.glm/.env.auth` 또는 `ZAI_API_KEY`만 사용한다.
 - marketplace/plugin manifest, agent prompt, stdout에 key를 넣지 않는다.
 - custom agent는 session ID를 사용자나 오케스트레이터에 노출하지 않는다.
-- GLM worker가 `--dangerously-skip-permissions`로 실제 작업을 수행한다는 사실을
-  README에 계속 명시한다.
+- explorer와 general-purpose GLM worker 모두
+  `--dangerously-skip-permissions`로 실행한다는 사실을 README에 명시한다.
+- explorer의 비수정 원칙은 system prompt의 행동 계약이지 보안 경계가 아니다.
+  세밀한 Bash allowlist, permission mode, 별도 sandbox는 v1 범위에 넣지 않는다.
 - bridge는 전달받은 절대 `cwd`를 사용하고 worktree 바깥 경로를 새로 선택하지
   않는다.
 - raw response와 stderr는 기존처럼 mode `0600`으로 보존한다.
@@ -318,6 +356,9 @@ commit/tag/push는 bump script의 책임에 넣지 않는다.
 - 각 Z.ai quota code가 `quota-exhausted`와 fallback 권고로 분류되는지 검증
 - `1302`, `1305`, `1211`, `1311`, 인증 오류가 quota fallback으로 오분류되지
   않는지 검증
+- start가 role을 저장하고 send가 session/model/cwd와 함께 원래 role을
+  유지하는지 검증
+- 공통 system prompt와 선택된 role prompt를 매 turn 직접 다시 읽는지 검증
 - 기존 start/send/session/model/cwd/result/close 계약의 회귀 검증
 - stdout에 API key와 session ID가 없는지 검증
 
@@ -325,9 +366,12 @@ commit/tag/push는 bump script의 책임에 넣지 않는다.
 
 - 두 manifest가 JSON으로 parse되고 필수 metadata가 있는지 검증
 - CLI/plugin/marketplace version parity 검증
-- `agents/glm-worker.md` frontmatter와 최소 tool/model 설정 검증
-- agent prompt에 start/send 지속성, 명시적 close, worktree 비소유,
+- `agents/explorer.md`와 `agents/general-purpose.md`의 frontmatter와 최소
+  tool/model 설정 검증
+- 두 agent prompt에 start/send 지속성, 명시적 close, worktree 비소유,
   `${CLAUDE_PLUGIN_ROOT}` 실행 경로가 들어 있는지 검증
+- explorer prompt가 Bash·Grep 사용을 허용하면서 조사·보고와 예상하지 않은
+  변경 확인을 요구하는지 검증
 - `my-superpowers` routing 예제에서 connector/MCP가 필요한 태스크가 native
   Claude를 선택하는지 검증
 - 지원되는 Claude Code에서는 `claude plugin validate .` 실행
@@ -345,16 +389,22 @@ commit/tag/push는 bump script의 책임에 넣지 않는다.
 
 `glm-opus-worker`, `glm-sonnet-worker`, `glm-haiku-worker`는 이름만 보면 명확하다.
 하지만 prompt가 세 벌로 복제되고, custom agent의 native `model`과 실제 GLM
-모델을 혼동하기 쉽고, lifecycle 수정 시 drift가 생긴다. 하나의 bridge와 명시적
-`GLM_MODEL`이 더 작은 공개 interface다.
+모델을 혼동하기 쉽고, lifecycle 수정 시 drift가 생긴다. 역할별 agent 두 개와
+명시적 `GLM_MODEL`이 더 정확한 공개 interface다.
 
-### 대안 B: `/glm-agent:orchestrate` skill 추가
+### 대안 B: custom agent 한 개와 role 인자
+
+파일 수는 하나 줄지만 자동 위임 설명에서 조사와 구현의 trigger가 섞이고,
+오케스트레이터가 매번 role을 정확히 구성해야 한다. 역할별 agent 두 개는 모델별
+복제 없이도 의도를 이름과 description으로 드러낸다.
+
+### 대안 C: `/glm-agent:orchestrate` skill 추가
 
 설치 후 눈에 띄는 진입점이라는 장점은 있다. 그러나 task 분해, worktree,
 병렬도, 리뷰를 Superpowers SDD와 두 군데에서 결정하게 된다. 중복
 오케스트레이션과 상충하는 lifecycle을 피하기 위해 v1에서는 만들지 않는다.
 
-### 대안 C: 모든 GLM 실패를 native로 fallback
+### 대안 D: 모든 GLM 실패를 native로 fallback
 
 작업 완료율은 겉으로 높아 보일 수 있다. 하지만 잘못된 model mapping, 만료된
 key, result 계약 버그까지 숨겨 진단 가능성을 낮춘다. 공식 quota code로 확인된
@@ -363,12 +413,15 @@ key, result 계약 버그까지 숨겨 진단 가능성을 낮춘다. 공식 quo
 ## 14. 완료 기준
 
 - public repo에서 marketplace를 추가하고 `glm-agent` plugin을 설치할 수 있다.
-- `glm-agent:glm-worker`가 start 후 worker ID를 반환하고, 후속 지시가 같은 GLM
-  session을 resume하며, 명시적 close 전까지 살아 있다.
+- `glm-agent:explorer`와 `glm-agent:general-purpose`가 각각 start 후 worker ID를
+  반환하고, 후속 지시가 같은 GLM session과 role을 resume하며, 명시적 close
+  전까지 살아 있다.
+- explorer가 Bash·Grep 등을 사용해 조사할 수 있고, 비수정 원칙이 강제된
+  permission이 아니라 명시된 행동 계약임이 문서화되어 있다.
 - SDD가 만든 서로 다른 worktree에서 worker 2~3개를 병렬 실행할 수 있다.
 - Opus/Sonnet/Haiku 논리 등급을 start 시 선택하고 send가 이를 보존한다.
 - quota 소진 code만 native fallback을 유발하고 나머지 오류는 정확히 노출된다.
 - `my-superpowers`가 모든 subagent dispatch 전에 provider를 선택하고, GLM 선택
-  시 이 plugin agent를 사용하도록 문서화되어 있다.
+  시 조사에는 explorer, 구현에는 general-purpose를 사용하도록 문서화되어 있다.
 - 전체 hermetic test, shell syntax, shellcheck, plugin validation이 통과한다.
 - README, `--help`, agent prompt, manifests의 동작과 버전이 일치한다.

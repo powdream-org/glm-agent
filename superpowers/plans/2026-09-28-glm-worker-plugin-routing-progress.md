@@ -81,3 +81,18 @@
   전달하는 계약이 없다.
 - spec의 provider 선택 정책과 테스트 전략에 이 조건을 추가했다.
 - 반영 커밋: `9524953` (`docs: route connector MCP work to Claude`).
+
+### spec 검토 반영 — 역할별 agent와 explorer 권한
+
+- 이전 결정의 `glm-agent:glm-worker` 단일 agent 설계는 이 결정으로 대체한다.
+- custom agent를 `glm-agent:explorer`와 `glm-agent:general-purpose`로 나눈다.
+  모델별 분리가 아니라 조사와 구현의 routing trigger를 분리하는 역할별 구조다.
+- explorer는 코드베이스 탐색을 위해 내부 GLM session의 `Bash`, `Grep`, `Glob`,
+  `Read` 등을 사용할 수 있다.
+- User 결정: explorer에도 `--dangerously-skip-permissions`를 사용한다. 세밀한
+  allowlist, permission mode, 별도 sandbox로 비수정을 강제하지 않는다.
+- explorer의 비수정은 system prompt 행동 계약으로 두고, 오케스트레이터가 완료
+  후 예상하지 않은 diff를 확인한다.
+- CLI는 `role=explorer|general-purpose`를 worker meta에 저장하고 `send`에서
+  원래 role을 유지한다. 공통 durable-result prompt와 role prompt는 별도 Markdown
+  파일에서 매 turn 직접 읽는다.
