@@ -142,3 +142,13 @@
   prompt 직접 읽기, `send` 역할 유지, 서로 다른 cwd에서의 병렬 worker 생성을
   구현했다.
 - 검증: `tests/test_glm_agent.sh` 109/109 통과, Bash 문법 검사와 shellcheck 통과.
+
+### Task 2 — Z.ai 오류 분류
+
+- RED: provider code가 있어도 기존 출력이 `ERROR=claude-exit-1`만 제공해 quota,
+  transient, authentication, model unavailable을 구분하지 못함을 확인했다.
+- GREEN: 공식 quota code만 `quota-exhausted`로 분류하고, 다른 알려진 code 및
+  worker protocol 오류를 구분했다. 모든 turn 출력과 status에 `ERROR_KIND`,
+  `PROVIDER_CODE`, `FALLBACK_RECOMMENDED`의 안정적인 필드 집합을 추가했다.
+- 검증: `tests/test_glm_agent.sh` 215/215 통과, API key와 session ID 비노출,
+  Bash 문법 검사와 shellcheck 통과.

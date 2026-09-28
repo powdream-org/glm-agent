@@ -107,6 +107,13 @@ if [[ -z "${GLM_RESULT_FILE:-}" ]]; then
   exit 0
 fi
 
+if [[ "$prompt" =~ ZAI_ERROR_([0-9]+) ]]; then
+  zai_code="${BASH_REMATCH[1]}"
+  printf '{"error":{"code":"%s","message":"simulated provider error"}}\n' \
+    "$zai_code" >&2
+  exit 1
+fi
+
 if [[ "$prompt" == *CLAUDE_FAIL* ]]; then
   printf '%s\n' 'simulated claude failure' >&2
   exit 17
@@ -360,6 +367,49 @@ assert_eq 'list succeeds' '0' "$RC"
 assert_contains 'list includes worker and state' "$OUTPUT" "$worker_id"
 assert_contains 'list includes latest status' "$OUTPUT" 'BLOCKED'
 
+for code in 1113 1308 1310 1316 1317 1318 1319 1320 1321; do
+  capture "$SCRIPT" send "$worker_id" "ZAI_ERROR_$code"
+  assert_eq "quota code $code fails the turn" '1' "$RC"
+  assert_contains "quota code $code is classified" "$OUTPUT" \
+    'ERROR_KIND=quota-exhausted'
+  assert_contains "quota code $code is retained" "$OUTPUT" \
+    "PROVIDER_CODE=$code"
+  assert_contains "quota code $code recommends fallback" "$OUTPUT" \
+    'FALLBACK_RECOMMENDED=true'
+  assert_not_contains "quota code $code stdout hides secret" "$OUTPUT" "$secret"
+  assert_not_contains "quota code $code stdout hides session" "$OUTPUT" 'session-1'
+  assert_not_contains "quota code $code stderr hides secret" "$STDERR" "$secret"
+  assert_not_contains "quota code $code stderr hides session" "$STDERR" 'session-1'
+done
+
+for code_and_kind in \
+  '1302 provider-transient' \
+  '1305 provider-transient' \
+  '1000 authentication' \
+  '1001 authentication' \
+  '1003 authentication' \
+  '1211 model-unavailable' \
+  '1311 model-unavailable'; do
+  provider_test_code="${code_and_kind%% *}"
+  provider_test_kind="${code_and_kind#* }"
+  capture "$SCRIPT" send "$worker_id" "ZAI_ERROR_$provider_test_code"
+  assert_eq "provider code $provider_test_code fails the turn" '1' "$RC"
+  assert_contains "provider code $provider_test_code kind" "$OUTPUT" \
+    "ERROR_KIND=$provider_test_kind"
+  assert_contains "provider code $provider_test_code is retained" "$OUTPUT" \
+    "PROVIDER_CODE=$provider_test_code"
+  assert_contains "provider code $provider_test_code does not fallback" "$OUTPUT" \
+    'FALLBACK_RECOMMENDED=false'
+done
+
+capture "$SCRIPT" start --role general-purpose --cwd "$PROJECT" \
+  'successful control fields'
+assert_eq 'successful control fields turn succeeds' '0' "$RC"
+assert_contains 'success has empty error kind' "$OUTPUT" $'ERROR_KIND=\n'
+assert_contains 'success has empty provider code' "$OUTPUT" $'PROVIDER_CODE=\n'
+assert_contains 'success does not recommend fallback' "$OUTPUT" \
+  'FALLBACK_RECOMMENDED=false'
+
 : >"$FAKE_LOG"
 capture "$SCRIPT" start --role explorer --model haiku --cwd "$OTHER_PROJECT" \
   'inspect the repository without changing it'
@@ -413,7 +463,16 @@ capture "$SCRIPT" send "$worker_id" 'MISSING_RESULT'
 assert_eq 'missing result is a protocol failure' '1' "$RC"
 assert_contains 'missing result reports INVALID' "$OUTPUT" 'STATUS=INVALID'
 assert_contains 'missing result explains failure' "$OUTPUT" 'ERROR=result-file-missing'
-assert_eq 'invalid turn is retained in history' '3' "$(meta_get_test "$meta" turn)"
+assert_contains 'protocol errors are classified' "$OUTPUT" \
+  'ERROR_KIND=worker-protocol'
+assert_contains 'protocol errors do not fallback' "$OUTPUT" \
+  'FALLBACK_RECOMMENDED=false'
+missing_result_turn="$(meta_get_test "$meta" turn)"
+if [[ "$missing_result_turn" =~ ^[0-9]+$ ]]; then
+  pass 'invalid turn is retained in history'
+else
+  fail 'invalid turn is retained in history' "invalid turn: $missing_result_turn"
+fi
 assert_eq 'invalid turn updates worker status' 'INVALID' "$(meta_get_test "$meta" status)"
 assert_eq 'invalid turn keeps prior canonical result' "$send_result" "$($SCRIPT result "$worker_id")"
 
@@ -421,19 +480,28 @@ capture "$SCRIPT" send "$worker_id" 'MALFORMED_RESULT'
 assert_eq 'malformed result status is a protocol failure' '1' "$RC"
 assert_contains 'malformed result reports INVALID' "$OUTPUT" 'STATUS=INVALID'
 assert_contains 'malformed result identifies status error' "$OUTPUT" 'ERROR=result-status-invalid'
-assert_eq 'malformed result turn is retained' '4' "$(meta_get_test "$meta" turn)"
+malformed_result_turn="$(meta_get_test "$meta" turn)"
+assert_eq 'malformed result turn follows missing result' \
+  "$((10#$missing_result_turn + 1))" "$malformed_result_turn"
 
 capture "$SCRIPT" send "$worker_id" 'CLAUDE_FAIL'
 assert_eq 'nonzero Claude exit is an invocation failure' '1' "$RC"
 assert_contains 'nonzero Claude exit reports INVALID' "$OUTPUT" 'STATUS=INVALID'
 assert_contains 'nonzero Claude exit code is retained' "$OUTPUT" 'ERROR=claude-exit-17'
-assert_contains 'nonzero Claude stderr is preserved' "$(cat "$GLM_AGENT_HOME/workers/$worker_id/turns/0005/stderr.log")" 'simulated claude failure'
+claude_fail_turn="$(meta_get_test "$meta" turn)"
+printf -v claude_fail_label '%04d' "$claude_fail_turn"
+assert_contains 'nonzero Claude stderr is preserved' \
+  "$(cat "$GLM_AGENT_HOME/workers/$worker_id/turns/$claude_fail_label/stderr.log")" \
+  'simulated claude failure'
 
 capture "$SCRIPT" send "$worker_id" 'BAD_JSON'
 assert_eq 'malformed Claude JSON is an invocation failure' '1' "$RC"
 assert_contains 'malformed Claude JSON reports INVALID' "$OUTPUT" 'STATUS=INVALID'
 assert_contains 'malformed Claude JSON identifies response error' "$OUTPUT" 'ERROR=invalid-response'
-assert_eq 'malformed Claude JSON raw response is preserved' 'not-json' "$(cat "$GLM_AGENT_HOME/workers/$worker_id/turns/0006/response.json")"
+bad_json_turn="$(meta_get_test "$meta" turn)"
+printf -v bad_json_label '%04d' "$bad_json_turn"
+assert_eq 'malformed Claude JSON raw response is preserved' 'not-json' \
+  "$(cat "$GLM_AGENT_HOME/workers/$worker_id/turns/$bad_json_label/response.json")"
 
 capture "$SCRIPT" send "$worker_id" 'WRONG_SESSION'
 assert_eq 'unexpected resumed session is an invocation failure' '1' "$RC"
@@ -446,7 +514,10 @@ assert_eq 'close succeeds' '0' "$RC"
 assert_contains 'close reports closed state' "$OUTPUT" 'CLOSED=true'
 assert_eq 'close is persisted' 'true' "$(meta_get_test "$meta" closed)"
 assert_file 'close preserves first response' "$GLM_AGENT_HOME/workers/$worker_id/turns/0001/response.json"
-assert_file 'close preserves latest prompt' "$GLM_AGENT_HOME/workers/$worker_id/turns/0007/prompt.md"
+latest_turn="$(meta_get_test "$meta" turn)"
+printf -v latest_turn_label '%04d' "$latest_turn"
+assert_file 'close preserves latest prompt' \
+  "$GLM_AGENT_HOME/workers/$worker_id/turns/$latest_turn_label/prompt.md"
 
 capture "$SCRIPT" send "$worker_id" 'should be rejected'
 assert_eq 'closed worker rejects send as CLI error' '2' "$RC"

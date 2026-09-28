@@ -263,12 +263,51 @@ print_turn_control() {
   local turn="$2"
   local status="$3"
   local result_file="$4"
+  local error_kind="$5"
+  local provider_code="$6"
 
   printf 'WORKER_ID=%s\n' "$(meta_get "$dir" worker_id)"
   printf 'TURN=%s\n' "$turn"
   printf 'ROLE=%s\n' "$(meta_get "$dir" role)"
   printf 'STATUS=%s\n' "$status"
   printf 'RESULT=%s\n' "$result_file"
+  printf 'ERROR_KIND=%s\n' "$error_kind"
+  printf 'PROVIDER_CODE=%s\n' "$provider_code"
+  if [[ "$error_kind" == "quota-exhausted" ]]; then
+    printf '%s\n' 'FALLBACK_RECOMMENDED=true'
+  else
+    printf '%s\n' 'FALLBACK_RECOMMENDED=false'
+  fi
+}
+
+extract_zai_code() {
+  local response_file="$1"
+  local stderr_file="$2"
+  local code=""
+
+  code="$(
+    { cat "$response_file"; cat "$stderr_file"; } 2>/dev/null |
+      grep -Eo '"code"[[:space:]]*:[[:space:]]*"?[0-9]+' |
+      sed -E 's/[^0-9]*([0-9]+).*/\1/' |
+      head -n 1
+  )" || true
+  printf '%s\n' "$code"
+}
+
+classify_error_kind() {
+  local provider_code="$1"
+  local default_kind="$2"
+
+  case "$provider_code" in
+    1113|1308|1310|1316|1317|1318|1319|1320|1321)
+      printf '%s\n' 'quota-exhausted'
+      ;;
+    1302|1305) printf '%s\n' 'provider-transient' ;;
+    1000|1001|1003) printf '%s\n' 'authentication' ;;
+    1211|1311) printf '%s\n' 'model-unavailable' ;;
+    '') printf '%s\n' "$default_kind" ;;
+    *) printf '%s\n' 'provider-error' ;;
+  esac
 }
 
 invalidate_turn() {
@@ -276,9 +315,14 @@ invalidate_turn() {
   local turn="$2"
   local result_file="$3"
   local error="$4"
+  local error_kind="$5"
+  local provider_code="$6"
 
   meta_set "$dir" status "INVALID"
-  print_turn_control "$dir" "$turn" "INVALID" "$result_file"
+  meta_set "$dir" error_kind "$error_kind"
+  meta_set "$dir" provider_code "$provider_code"
+  print_turn_control "$dir" "$turn" "INVALID" "$result_file" \
+    "$error_kind" "$provider_code"
   printf 'ERROR=%s\n' "$error"
   return 1
 }
@@ -301,6 +345,8 @@ run_turn() {
   local exit_code=0
   local returned_session_id
   local result_status
+  local provider_code
+  local error_kind
   local system_prompt
   local role
   local role_prompt_path
@@ -376,7 +422,10 @@ run_turn() {
   chmod 600 "$response_file" "$stderr_file"
 
   if ((exit_code != 0)); then
-    invalidate_turn "$dir" "$turn" "$result_file" "claude-exit-$exit_code"
+    provider_code="$(extract_zai_code "$response_file" "$stderr_file")"
+    error_kind="$(classify_error_kind "$provider_code" "invocation")"
+    invalidate_turn "$dir" "$turn" "$result_file" "claude-exit-$exit_code" \
+      "$error_kind" "$provider_code"
     return 1
   fi
 
@@ -387,12 +436,14 @@ run_turn() {
       | select(type == "string" and length > 0)
     ' "$response_file" 2>/dev/null
   )"; then
-    invalidate_turn "$dir" "$turn" "$result_file" "invalid-response"
+    invalidate_turn "$dir" "$turn" "$result_file" "invalid-response" \
+      "worker-protocol" ""
     return 1
   fi
 
   if [[ -n "$session_id" && "$returned_session_id" != "$session_id" ]]; then
-    invalidate_turn "$dir" "$turn" "$result_file" "unexpected-session-id"
+    invalidate_turn "$dir" "$turn" "$result_file" "unexpected-session-id" \
+      "worker-protocol" ""
     return 1
   fi
 
@@ -401,7 +452,8 @@ run_turn() {
   fi
 
   if [[ ! -s "$result_file" ]]; then
-    invalidate_turn "$dir" "$turn" "$result_file" "result-file-missing"
+    invalidate_turn "$dir" "$turn" "$result_file" "result-file-missing" \
+      "worker-protocol" ""
     return 1
   fi
   chmod 600 "$result_file"
@@ -414,14 +466,17 @@ run_turn() {
       result_status="BLOCKED"
       ;;
     *)
-      invalidate_turn "$dir" "$turn" "$result_file" "result-status-invalid"
+      invalidate_turn "$dir" "$turn" "$result_file" "result-status-invalid" \
+        "worker-protocol" ""
       return 1
       ;;
   esac
 
   meta_set "$dir" status "$result_status"
   meta_set "$dir" latest_result "$result_file"
-  print_turn_control "$dir" "$turn" "$result_status" "$result_file"
+  meta_set "$dir" error_kind ""
+  meta_set "$dir" provider_code ""
+  print_turn_control "$dir" "$turn" "$result_status" "$result_file" "" ""
 }
 
 cmd_api_key() {
@@ -532,6 +587,8 @@ turn=0
 status=NEW
 closed=false
 latest_result=
+error_kind=
+provider_code=
 EOF
     printf '%s\n' "$task" >"$dir/task.md"
   )
@@ -587,6 +644,13 @@ cmd_status() {
   printf 'CWD=%s\n' "$(meta_get "$dir" cwd)"
   printf 'CLOSED=%s\n' "$(meta_get "$dir" closed)"
   printf 'RESULT=%s\n' "$(meta_get "$dir" latest_result)"
+  printf 'ERROR_KIND=%s\n' "$(meta_get "$dir" error_kind)"
+  printf 'PROVIDER_CODE=%s\n' "$(meta_get "$dir" provider_code)"
+  if [[ "$(meta_get "$dir" error_kind)" == "quota-exhausted" ]]; then
+    printf '%s\n' 'FALLBACK_RECOMMENDED=true'
+  else
+    printf '%s\n' 'FALLBACK_RECOMMENDED=false'
+  fi
 }
 
 cmd_list() {
