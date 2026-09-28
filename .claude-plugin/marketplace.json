@@ -1,0 +1,14 @@
+{
+  "name": "glm-agent",
+  "description": "Claude Code plugins from powdream-org/glm-agent",
+  "owner": { "name": "powdream-org" },
+  "plugins": [
+    {
+      "name": "glm-agent",
+      "description": "Persistent Z.ai GLM workers for Claude Code orchestration",
+      "version": "0.2.0",
+      "source": "./",
+      "author": { "name": "Heejoon Kang" }
+    }
+  ]
+}

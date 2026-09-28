@@ -152,3 +152,17 @@
   `PROVIDER_CODE`, `FALLBACK_RECOMMENDED`의 안정적인 필드 집합을 추가했다.
 - 검증: `tests/test_glm_agent.sh` 215/215 통과, API key와 session ID 비노출,
   Bash 문법 검사와 shellcheck 통과.
+
+### Task 3 — Claude Code marketplace와 역할별 agent
+
+- Ruling: available `plugin-creator` skill은 Codex `.codex-plugin` 전용이므로
+  Claude Code `.claude-plugin` schema 생성에는 적용하지 않았다. skill의 실제
+  validator 우선 원칙을 유지하고 `claude plugin validate --strict`를 판정 기준으로
+  사용했다. 잘못된 판단의 비용은 Codex용 marketplace 연동을 별도로 만들지 않은
+  것이며, 이번 요청 범위인 Claude Code plugin에는 영향이 없다.
+- RED: manifest와 역할 agent 4개가 없어 plugin test가 4건 실패했다.
+- GREEN: marketplace/plugin manifest와 Haiku bridge인 `explorer`,
+  `general-purpose` agent를 추가했다. 두 agent 모두 worktree를 소유하지 않고,
+  persistent worker를 명시적 close 전까지 유지한다.
+- 검증: `tests/test_plugin.sh` 10/10 통과(공백 포함 경로 포함),
+  `claude plugin validate --strict .` 통과, Bash 문법 검사와 shellcheck 통과.
