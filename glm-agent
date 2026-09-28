@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 PROGRAM="${0##*/}"
 VERSION="0.2.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
 
 GLM_AGENT_HOME="${GLM_AGENT_HOME:-$HOME/.glm}"
 if [[ "$GLM_AGENT_HOME" != /* ]]; then
@@ -84,7 +86,6 @@ WORKER FILES
   ~/.glm/workers/<worker-id>/
     meta
     task.md
-    system-prompt.md
     turns/NNNN/
       prompt.md
       response.json
@@ -112,6 +113,11 @@ ORCHESTRATOR WORKFLOW
   3. glm-agent send <worker-id> "<review feedback>" when correction is needed.
   4. Repeat review and send until satisfactory.
   5. glm-agent close <worker-id>
+
+ENVIRONMENT
+  GLM_SYSTEM_PROMPT_FILE
+      System prompt Markdown read at the start of every worker turn.
+      Default: system-prompt.md next to the glm-agent executable.
 
 SECURITY
   ~/.glm is mode 0700 and ~/.glm/.env.auth is mode 0600. The API key is never
@@ -174,6 +180,15 @@ require_execution_dependencies() {
   require_command jq
 }
 
+require_system_prompt_file() {
+  [[ -f "$SYSTEM_PROMPT_FILE" ]] ||
+    die "system prompt file not found: $SYSTEM_PROMPT_FILE"
+  [[ -r "$SYSTEM_PROMPT_FILE" ]] ||
+    die "system prompt file is not readable: $SYSTEM_PROMPT_FILE"
+  [[ -s "$SYSTEM_PROMPT_FILE" ]] ||
+    die "system prompt file is empty: $SYSTEM_PROMPT_FILE"
+}
+
 run_glm_claude() {
   require_command claude
 
@@ -230,72 +245,6 @@ require_worker() {
   [[ -f "$dir/meta" ]] || die "worker not found: $worker_id"
 }
 
-write_system_prompt() {
-  local file="$1"
-
-  cat >"$file" <<'EOF'
-You are a persistent implementation worker controlled by a parent orchestrator.
-Perform the delegated implementation, investigation, debugging, testing, or
-refactoring work yourself. Do not merely describe what someone else should do.
-
-<execution_contract>
-Starting a background process is not completion.
-
-When completion depends on a command or process, observe its exit status and
-output and verify the expected effect. Do not launch required work
-asynchronously and terminate before observing its result. A persistent
-background process is allowed only when the task genuinely requires one; in
-that case verify that it is usable and finish the work that depends on it.
-
-Before reporting DONE:
-- inspect the resulting changes and final state
-- run relevant tests and checks
-- investigate and fix failures when reasonably possible
-- verify the requested outcome, not just that commands were started
-
-If the work cannot be completed, report BLOCKED with the exact blocker instead
-of claiming success.
-</execution_contract>
-
-<durable_result_contract>
-GLM_RESULT_FILE is the canonical result file for this turn and is an absolute
-path. Before terminating you MUST:
-
-1. Write the complete final report to exactly GLM_RESULT_FILE.
-2. Read the result file back.
-3. Verify that it contains the intended report.
-4. Ensure its final line is exactly one of these two lines:
-
-STATUS: DONE
-STATUS: BLOCKED
-
-Use this report structure:
-
-# Summary
-Concise description of the outcome.
-
-# Changes
-Files and behavior changed, or "None".
-
-# Verification
-Commands and checks performed with their outcomes.
-
-# Remaining Issues
-Anything the parent orchestrator should know, or "None".
-
-The conversational response is not durable storage. The result file is
-canonical. Do not place any text after the final STATUS line.
-</durable_result_contract>
-
-<continuation_contract>
-This session may be resumed. On later turns, keep useful context, inspect the
-current working tree, act on the new instruction or review feedback, avoid
-repeating finished work, and write a new result file for that turn.
-</continuation_contract>
-EOF
-  chmod 600 "$file"
-}
-
 print_turn_control() {
   local dir="$1"
   local turn="$2"
@@ -335,7 +284,6 @@ run_turn() {
   local response_file
   local stderr_file
   local result_file
-  local system_prompt_file
   local exit_code=0
   local returned_session_id
   local result_status
@@ -357,6 +305,8 @@ run_turn() {
   [[ -d "$cwd" ]] || die "worker working directory does not exist: $cwd"
   [[ "$current_turn" =~ ^[0-9]+$ ]] ||
     die "worker has invalid turn metadata: $worker_id"
+  require_system_prompt_file
+  system_prompt="$(<"$SYSTEM_PROMPT_FILE")"
 
   turn="$((10#$current_turn + 1))"
   printf -v turn_label '%04d' "$turn"
@@ -365,18 +315,15 @@ run_turn() {
   response_file="$turn_dir/response.json"
   stderr_file="$turn_dir/stderr.log"
   result_file="$turn_dir/result.md"
-  system_prompt_file="$dir/system-prompt.md"
   validate_single_line "result file path" "$result_file"
 
   mkdir "$turn_dir" || die "turn already exists: $worker_id/$turn_label"
   printf '%s\n' "$prompt" >"$prompt_file"
   chmod 600 "$prompt_file"
-  write_system_prompt "$system_prompt_file"
 
   meta_set "$dir" turn "$turn"
   meta_set "$dir" status "RUNNING"
 
-  system_prompt="$(<"$system_prompt_file")"
   system_prompt+=$'\n\n<current_turn_result_file>\n'
   system_prompt+="For this turn, GLM_RESULT_FILE is exactly this absolute path:"
   system_prompt+=$'\n'
@@ -525,6 +472,7 @@ cmd_start() {
 
   require_execution_dependencies
   load_api_key
+  require_system_prompt_file
   ensure_state_home
   mkdir -p "$WORKERS_DIR"
   chmod 700 "$WORKERS_DIR"

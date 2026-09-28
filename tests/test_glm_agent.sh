@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT="/Users/h_kang/dev/glm-agent-test/glm-agent"
+TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_DIR="$(cd "$TESTS_DIR/.." && pwd -P)"
+SCRIPT="$REPO_DIR/glm-agent"
 TEMP_BASE="${TMPDIR:-/tmp}"
 TEMP_BASE="${TEMP_BASE%/}"
 TEST_ROOT="$(mktemp -d "$TEMP_BASE/glm-agent-test.XXXXXX")"
@@ -10,6 +12,7 @@ PROJECT="$TEST_ROOT/project"
 OTHER_PROJECT="$TEST_ROOT/other-project"
 FAKE_BIN="$TEST_ROOT/bin"
 FAKE_LOG="$TEST_ROOT/claude.log"
+TEST_SYSTEM_PROMPT="$TEST_ROOT/system-prompt.md"
 
 cleanup() {
   rm -rf "$TEST_ROOT"
@@ -81,6 +84,11 @@ done
   else
     printf '%s\n' 'result_path_in_prompt=no'
   fi
+  case "$append_prompt" in
+    *'TEST_PROMPT_REVISION=one'*) printf '%s\n' 'prompt_revision=one' ;;
+    *'TEST_PROMPT_REVISION=two'*) printf '%s\n' 'prompt_revision=two' ;;
+    *) printf '%s\n' 'prompt_revision=unknown' ;;
+  esac
 } >>"$FAKE_CLAUDE_LOG"
 
 if [[ -z "${GLM_RESULT_FILE:-}" ]]; then
@@ -126,6 +134,18 @@ export HOME="$TEST_HOME"
 export GLM_AGENT_HOME="$TEST_HOME/.glm"
 export FAKE_CLAUDE_LOG="$FAKE_LOG"
 export CLAUDECODE=1
+export GLM_SYSTEM_PROMPT_FILE="$TEST_SYSTEM_PROMPT"
+
+write_test_system_prompt() {
+  local revision="$1"
+  cat >"$TEST_SYSTEM_PROMPT" <<EOF
+Starting a background process is not completion.
+Read the result file back.
+TEST_PROMPT_REVISION=$revision
+EOF
+}
+
+write_test_system_prompt one
 
 failures=0
 tests=0
@@ -248,6 +268,11 @@ assert_file 'start creates task.md' "$GLM_AGENT_HOME/workers/$worker_id/task.md"
 assert_file 'start preserves raw response' "$GLM_AGENT_HOME/workers/$worker_id/turns/0001/response.json"
 assert_file 'start preserves stderr' "$GLM_AGENT_HOME/workers/$worker_id/turns/0001/stderr.log"
 assert_file 'start creates durable result' "$result_path"
+if [[ ! -e "$GLM_AGENT_HOME/workers/$worker_id/system-prompt.md" ]]; then
+  pass 'start does not copy the directly read system prompt'
+else
+  fail 'start does not copy the directly read system prompt' 'unexpected worker-level system-prompt.md'
+fi
 assert_eq 'result ends with exact DONE marker' 'STATUS: DONE' "$(tail -n 1 "$result_path")"
 meta="$GLM_AGENT_HOME/workers/$worker_id/meta"
 assert_eq 'start stores original cwd' "$PROJECT" "$(meta_get_test "$meta" cwd)"
@@ -260,11 +285,13 @@ assert_contains 'start supplies absolute result file' "$start_log" "result_file=
 assert_contains 'start appends worker contract' "$start_log" 'contract=present'
 assert_contains 'start enables autonomous headless execution' "$start_log" 'permission_bypass=yes'
 assert_contains 'start tells worker the exact result path' "$start_log" 'result_path_in_prompt=yes'
+assert_contains 'start reads the configured prompt source' "$start_log" 'prompt_revision=one'
 assert_contains 'start keeps 1M compact window' "$start_log" 'compact=1000000'
 assert_contains 'start disables nonessential traffic' "$start_log" 'nonessential=1'
 assert_contains 'start keeps API timeout' "$start_log" 'timeout=3000000'
 
 : >"$FAKE_LOG"
+write_test_system_prompt two
 send_stderr="$TEST_ROOT/send.stderr"
 if send_output="$(
   cd "$OTHER_PROJECT"
@@ -282,6 +309,7 @@ send_log="$(cat "$FAKE_LOG")"
 assert_contains 'send resumes stored session' "$send_log" 'resume=session-1'
 assert_contains 'send uses original cwd' "$send_log" "cwd=$PROJECT"
 assert_contains 'send uses original model' "$send_log" 'model=sonnet'
+assert_contains 'send reads the latest prompt source' "$send_log" 'prompt_revision=two'
 assert_eq 'send advances stored turn' '2' "$(meta_get_test "$meta" turn)"
 assert_eq 'send updates stored status' 'BLOCKED' "$(meta_get_test "$meta" status)"
 
