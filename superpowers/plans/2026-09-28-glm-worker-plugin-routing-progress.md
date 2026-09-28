@@ -97,3 +97,10 @@
   원래 role을 유지한다. 공통 durable-result prompt와 role prompt는 별도 Markdown
   파일에서 매 turn 직접 읽는다.
 - 반영 커밋: `db662d7` (`docs: split GLM workers by role`).
+
+### spec 승인·계획 단계 진입
+
+- User 지시: “superpowers를 이용해서 구현 시작”.
+- 해석: 현재 spec을 승인하고 Superpowers 구현 절차로 전환한다.
+- `superpowers:writing-plans`에 따라 제품 코드보다 먼저 implementation plan을
+  작성한다. plan 검토 전에는 구현 파일을 변경하지 않는다.
