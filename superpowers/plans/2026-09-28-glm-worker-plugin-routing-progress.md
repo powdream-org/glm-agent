@@ -256,3 +256,13 @@
   `origin/main`에 push했다. 원격 HEAD는
   `b12e4ae961092555c0104a9e718a4bee11358015`로 로컬과 일치했다.
 - push 후 active `gh` account는 기존 `heejoon-toridori`로 복원했다.
+
+### 사용자 Claude Code 설치
+
+- Claude Code CLI `2.1.283`의 실제 사용자 설정에서
+  `claude plugin marketplace add powdream-org/glm-agent`를 실행해 marketplace
+  `glm-agent` 등록에 성공했다.
+- `claude plugin install glm-agent@glm-agent --scope user`로 version `0.2.0` 설치
+  및 enabled 상태를 확인했다.
+- component inventory: Agents 2 (`explorer`, `general-purpose`), Skills/Hooks/MCP/LSP
+  0. API key나 session ID는 출력하지 않았다.
