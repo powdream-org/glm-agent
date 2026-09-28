@@ -70,3 +70,4 @@
   - quota fallback은 Z.ai code `1113`, `1308`, `1310`, `1316`–`1321`로 제한하고
     단기 rate limit·model 미지원·인증·worker protocol 오류와 분리.
 - `git diff --check` → 통과.
+- 설계 문서 커밋: `d383ba5` (`docs: design the GLM worker plugin routing`).
