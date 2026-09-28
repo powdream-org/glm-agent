@@ -98,10 +98,14 @@ if [[ -f "$plugin_json" && -f "$marketplace_json" ]]; then
 fi
 if [[ -f "$explorer_agent" ]]; then
   explorer_content="$(cat "$explorer_agent")"
+  explorer_flat="$(printf '%s' "$explorer_content" | tr '\n' ' ' | \
+    sed -E 's/[[:space:]]+/ /g')"
   assert_contains 'explorer uses plugin-root CLI' "$explorer_content" \
     "\${CLAUDE_PLUGIN_ROOT}/glm-agent"
   assert_contains 'explorer does not own worktrees' "$explorer_content" \
     'Never create, switch, or delete a worktree.'
+  assert_contains 'explorer rejects unsupported GLM models' "$explorer_flat" \
+    'Reject any other GLM_MODEL value.'
 fi
 
 if [[ -x "$bump_script" ]]; then
@@ -120,7 +124,7 @@ if [[ -x "$bump_script" ]]; then
   invalid_fixture="$TEST_ROOT/invalid version fixture"
   mkdir -p "$invalid_fixture"
   cp -R "$REPO_DIR/." "$invalid_fixture/"
-  before_versions="$(shasum \
+  before_versions="$(cksum \
     "$invalid_fixture/glm-agent" \
     "$invalid_fixture/.claude-plugin/plugin.json" \
     "$invalid_fixture/.claude-plugin/marketplace.json")"
@@ -138,7 +142,7 @@ if [[ -x "$bump_script" ]]; then
   else
     pass 'empty version is rejected'
   fi
-  after_versions="$(shasum \
+  after_versions="$(cksum \
     "$invalid_fixture/glm-agent" \
     "$invalid_fixture/.claude-plugin/plugin.json" \
     "$invalid_fixture/.claude-plugin/marketplace.json")"
@@ -151,6 +155,8 @@ if [[ -f "$general_agent" ]]; then
     sed -E 's/[[:space:]]+/ /g')"
   assert_contains 'general agent never auto-closes' "$general_flat" \
     'Never close a worker merely because a turn returned DONE or BLOCKED.'
+  assert_contains 'general agent rejects unsupported GLM models' \
+    "$general_flat" 'Reject any other GLM_MODEL value.'
 fi
 
 if command -v claude >/dev/null 2>&1 &&

@@ -11,7 +11,8 @@ Never create, switch, or delete a worktree.
 
 Accept ACTION, CWD, TASK, optional GLM_MODEL, and optional WORKER_ID from the
 delegation prompt. For ACTION=start, require CWD and TASK, default GLM_MODEL to
-haiku, and construct one Bash call whose arguments are `bash`,
+haiku, and require GLM_MODEL to be opus, sonnet, or haiku. Reject any other
+GLM_MODEL value. Construct one Bash call whose arguments are `bash`,
 `${CLAUDE_PLUGIN_ROOT}/glm-agent`, `start`, `--role`, `explorer`, `--model`, the
 GLM_MODEL value, `--cwd`, the CWD value, and TASK as one final argument.
 

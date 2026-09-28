@@ -297,7 +297,7 @@ assert_eq 'start succeeds for DONE result' '0' "$start_rc"
 worker_id="$(printf '%s\n' "$start_output" | sed -n 's/^WORKER_ID=//p')"
 result_path="$(printf '%s\n' "$start_output" | sed -n 's/^RESULT=//p')"
 assert_contains 'start returns compact DONE status' "$start_output" \
-  $'TURN=1\nROLE=general-purpose\nSTATUS=DONE\nRESULT='
+  $'TURN=1\nMODEL=sonnet\nROLE=general-purpose\nSTATUS=DONE\nRESULT='
 assert_not_contains 'start does not print session id' "$start_output" 'SESSION_ID='
 assert_file 'start creates task.md' "$GLM_AGENT_HOME/workers/$worker_id/task.md"
 assert_file 'start preserves raw response' "$GLM_AGENT_HOME/workers/$worker_id/turns/0001/response.json"
@@ -345,7 +345,7 @@ else
 fi
 assert_eq 'send treats BLOCKED as a valid turn' '0' "$send_rc"
 assert_contains 'send returns compact BLOCKED status' "$send_output" \
-  $'TURN=2\nROLE=general-purpose\nSTATUS=BLOCKED\nRESULT='
+  $'TURN=2\nMODEL=sonnet\nROLE=general-purpose\nSTATUS=BLOCKED\nRESULT='
 send_result="$(printf '%s\n' "$send_output" | sed -n 's/^RESULT=//p')"
 assert_eq 'send result ends with exact BLOCKED marker' 'STATUS: BLOCKED' "$(tail -n 1 "$send_result")"
 send_log="$(cat "$FAKE_LOG")"
@@ -421,6 +421,7 @@ capture "$SCRIPT" start --role explorer --model haiku --cwd "$OTHER_PROJECT" \
 assert_eq 'explorer start succeeds' '0' "$RC"
 explorer_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
 assert_contains 'explorer start reports role' "$OUTPUT" 'ROLE=explorer'
+assert_contains 'explorer start reports model' "$OUTPUT" 'MODEL=haiku'
 explorer_meta="$GLM_AGENT_HOME/workers/$explorer_id/meta"
 assert_eq 'explorer role is stored' 'explorer' \
   "$(meta_get_test "$explorer_meta" role)"
@@ -432,6 +433,7 @@ assert_contains 'explorer role prompt is loaded' "$explorer_start_log" \
 capture "$SCRIPT" send "$explorer_id" 'continue the same investigation'
 assert_eq 'explorer send succeeds' '0' "$RC"
 assert_contains 'explorer send reports stored role' "$OUTPUT" 'ROLE=explorer'
+assert_contains 'explorer send reports stored model' "$OUTPUT" 'MODEL=haiku'
 assert_eq 'explorer send preserves model' 'haiku' \
   "$(meta_get_test "$explorer_meta" model)"
 assert_eq 'explorer send preserves cwd' "$OTHER_PROJECT" \

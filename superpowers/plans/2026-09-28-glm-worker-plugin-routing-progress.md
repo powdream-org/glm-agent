@@ -202,3 +202,16 @@
 - 검증: CLI test 218/218, plugin test 25/25 통과. README, CLI help, 개인 skill에서
   `glm-agent:explorer`, `glm-agent:general-purpose`, `FALLBACK_RECOMMENDED`,
   `connector/MCP`의 의도한 위치를 확인했다.
+
+### 최종 self-review 보완
+
+- 승인 spec의 bridge 출력 계약과 구현을 대조해 start/send 출력의 `MODEL` 누락을
+  발견했다. 또한 agent prompt가 지원 모델 세 개를 설명하지만 다른 값을
+  명시적으로 거부하지 않는 누락을 발견했다.
+- RED: CLI test 4건, plugin prompt test 2건이 새 계약에서 실패했다.
+- GREEN: control-plane 출력에 저장된 `MODEL`을 추가하고 두 bridge 모두
+  `opus|sonnet|haiku` 외 `GLM_MODEL`을 거부하도록 명시했다. README와 help 예시도
+  동기화했다. test fixture checksum은 비필수 `shasum` 대신 POSIX `cksum`으로
+  바꿨다.
+- 검증: CLI test 220/220, plugin test 27/27, 관련 Bash 문법·shellcheck와 Claude
+  strict validation 통과.

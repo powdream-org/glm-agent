@@ -79,6 +79,7 @@ Successful control-plane output has this shape:
 ```text
 WORKER_ID=20260928T032843Z-15896-30630
 TURN=1
+MODEL=sonnet
 ROLE=general-purpose
 STATUS=DONE
 RESULT=/Users/example/.glm/workers/20260928T032843Z-15896-30630/turns/0001/result.md

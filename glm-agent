@@ -65,6 +65,7 @@ COMMANDS
       Output:
         WORKER_ID=<id>
         TURN=1
+        MODEL=opus|sonnet|haiku
         ROLE=explorer|general-purpose
         STATUS=DONE|BLOCKED|INVALID
         RESULT=<absolute-path>
@@ -277,6 +278,7 @@ print_turn_control() {
 
   printf 'WORKER_ID=%s\n' "$(meta_get "$dir" worker_id)"
   printf 'TURN=%s\n' "$turn"
+  printf 'MODEL=%s\n' "$(meta_get "$dir" model)"
   printf 'ROLE=%s\n' "$(meta_get "$dir" role)"
   printf 'STATUS=%s\n' "$status"
   printf 'RESULT=%s\n' "$result_file"
