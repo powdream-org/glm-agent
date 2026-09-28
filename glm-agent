@@ -29,7 +29,7 @@ glm-agent - persistent GLM coding worker for agent orchestration
 USAGE
   glm-agent api-key [key]
   glm-agent run <prompt>
-  glm-agent start [--model <alias>] [--cwd <directory>] <task>
+  glm-agent start [--role <role>] [--model <alias>] [--cwd <directory>] <task>
   glm-agent send <worker-id> <message>
   glm-agent result <worker-id>
   glm-agent status <worker-id>
@@ -42,7 +42,7 @@ DESCRIPTION
   glm-agent runs GLM through Claude Code using Z.ai's Anthropic-compatible
   endpoint. A worker is durable across invocations: start creates a Claude
   session and send resumes that same session in its original directory with
-  its original model.
+  its original role and model.
 
   stdout is compact and machine-readable. Detailed reports, raw Claude JSON,
   and stderr are stored under ~/.glm/workers/<worker-id>/.
@@ -57,19 +57,24 @@ COMMANDS
       Run a one-shot diagnostic GLM Claude Code session. This does not create
       a persistent worker and prints Claude's normal response.
 
-  start [--model <alias>] [--cwd <directory>] <task>
-      Create a worker and execute its first turn. Defaults are model=sonnet
-      and cwd=current directory.
+  start [--role <role>] [--model <alias>] [--cwd <directory>] <task>
+      Create a worker and execute its first turn. Roles are explorer and
+      general-purpose. Defaults are role=general-purpose, model=sonnet, and
+      cwd=current directory.
 
       Output:
         WORKER_ID=<id>
         TURN=1
+        ROLE=explorer|general-purpose
         STATUS=DONE|BLOCKED|INVALID
         RESULT=<absolute-path>
+        ERROR_KIND=<classification-or-empty>
+        PROVIDER_CODE=<Z.ai-code-or-empty>
+        FALLBACK_RECOMMENDED=true|false
 
   send <worker-id> <message>
       Execute another turn by resuming the stored Claude session. send always
-      uses the worker's original cwd and model.
+      uses the worker's original cwd, role, and model.
 
   result <worker-id>
       Print the absolute path to the latest valid durable result file.
@@ -120,6 +125,10 @@ ENVIRONMENT
   GLM_SYSTEM_PROMPT_FILE
       System prompt Markdown read at the start of every worker turn.
       Default: system-prompt.md next to the glm-agent executable.
+
+  GLM_ROLE_PROMPTS_DIR
+      Directory containing explorer.md and general-purpose.md, read directly
+      on every turn. Default: prompts/ next to the executable.
 
 SECURITY
   ~/.glm is mode 0700 and ~/.glm/.env.auth is mode 0600. The API key is never

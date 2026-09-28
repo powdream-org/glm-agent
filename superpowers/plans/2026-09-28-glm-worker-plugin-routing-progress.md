@@ -176,3 +176,29 @@
 - `AGENTS.md`에 plugin 구조, 전체 gate, synchronized release 절차를 추가했다.
 - 검증: plugin test 20/20, script/test 문법 검사와 shellcheck, Claude strict
   validation 통과. 실제 checkout의 세 버전은 모두 `0.2.0`으로 유지됐다.
+
+### Task 5 — 공개 문서와 my-superpowers provider routing
+
+- RED: CLI help에 role/fallback 필드가 없고 README에 marketplace 설치, 역할별
+  agent, connector/MCP routing이 없음을 테스트로 확인했다. 개인
+  `my-superpowers`에도 GLM provider routing 키워드가 전혀 없었다.
+- GREEN: help와 README에 plugin 설치, 두 역할, persistent lifecycle, 위험 권한,
+  native 우선 조건, quota 전용 fallback을 문서화했다.
+- 외부 수정: `/Users/h_kang/.claude/skills/my-superpowers/SKILL.md`의 §6에서
+  `**띄우는 방법**` 바로 앞에 `### native Claude와 GLM provider 선택` 절을
+  추가했다. explorer/general-purpose 선택, connector/MCP native 우선,
+  bridge Haiku와 실제 `GLM_MODEL` 분리, `WORKER_ID` resume, quota latch와 같은
+  논리 등급 native fallback을 명시했다. 기존 thin-main, ledger, tier, file-return,
+  verification 규칙은 변경하지 않았다.
+- Ruling: `superpowers:writing-skills`가 요구하는 fresh subagent pressure test는
+  User가 선택한 Native 실행 및 별도 요청 없는 subagent 생성을 금지한 현재 실행
+  규칙과 충돌해 수행하지 않았다. 정적 baseline 부재 확인, post-edit routing
+  contract 검색, YAML frontmatter parsing으로 대체했다. 이 판단이 틀렸을 때의
+  비용은 실제 agent가 압박 상황에서 routing을 따르는지에 대한 경험적 표본이
+  없다는 것이다.
+- 공식 `quick_validate.py`는 `ModuleNotFoundError: No module named 'yaml'`로
+  실행되지 않았다. Ruby `YAML.safe_load`로 frontmatter의 `name`과 `description`
+  유효성을 확인했다.
+- 검증: CLI test 218/218, plugin test 25/25 통과. README, CLI help, 개인 skill에서
+  `glm-agent:explorer`, `glm-agent:general-purpose`, `FALLBACK_RECOMMENDED`,
+  `connector/MCP`의 의도한 위치를 확인했다.

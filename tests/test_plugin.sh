@@ -59,12 +59,23 @@ marketplace_json="$REPO_DIR/.claude-plugin/marketplace.json"
 explorer_agent="$REPO_DIR/agents/explorer.md"
 general_agent="$REPO_DIR/agents/general-purpose.md"
 bump_script="$REPO_DIR/scripts/bump-version.sh"
+readme="$(cat "$REPO_DIR/README.md")"
 
 assert_file 'plugin manifest exists' "$plugin_json"
 assert_file 'marketplace manifest exists' "$marketplace_json"
 assert_file 'explorer agent exists' "$explorer_agent"
 assert_file 'general-purpose agent exists' "$general_agent"
 assert_file 'version bump script exists' "$bump_script"
+assert_contains 'README documents marketplace add' "$readme" \
+  'claude plugin marketplace add powdream-org/glm-agent'
+assert_contains 'README documents plugin install' "$readme" \
+  'claude plugin install glm-agent@glm-agent'
+assert_contains 'README documents both agents' "$readme" \
+  'glm-agent:explorer'
+assert_contains 'README documents general agent' "$readme" \
+  'glm-agent:general-purpose'
+assert_contains 'README documents native connector routing' "$readme" \
+  'connector/MCP'
 
 if [[ -f "$plugin_json" ]]; then
   assert_eq 'plugin name' 'glm-agent' "$(jq -r '.name' "$plugin_json")"
