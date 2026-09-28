@@ -128,3 +128,8 @@
   않는다. 대신 이 committed 작업 원장과 plan의 Task heading으로 동일한 진행
   상태와 검증 증거를 기록한다. 이 판단이 틀렸을 때의 비용은 helper가 생성하는
   brief/test-log 자동화가 없다는 것이며, 구현 결과물이나 검증 범위는 줄이지 않는다.
+- 격리 worktree 생성 완료:
+  `/Users/h_kang/dev/git/powdream/glm-agent/.worktrees/glm-worker-plugin`, branch
+  `feat/glm-worker-plugin`.
+- 구현 전 기준선: `bash tests/test_glm_agent.sh` 91/91 통과,
+  `bash -n glm-agent tests/test_glm_agent.sh` 통과, shellcheck 통과.
