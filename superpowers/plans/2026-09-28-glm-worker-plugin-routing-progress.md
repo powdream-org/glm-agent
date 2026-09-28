@@ -80,3 +80,4 @@
   부모 Claude Code 세션의 MCP 도구·연결·인증 상태를 내부 GLM session에
   전달하는 계약이 없다.
 - spec의 provider 선택 정책과 테스트 전략에 이 조건을 추가했다.
+- 반영 커밋: `9524953` (`docs: route connector MCP work to Claude`).
