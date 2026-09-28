@@ -19,7 +19,12 @@ Claude JSON, and stderr belong under the worker directory.
 - `glm-agent`: CLI implementation and embedded user-facing help.
 - `system-prompt.md`: worker execution and durable-result contract, loaded
   directly at the start of every worker turn.
+- `prompts/`: role-specific worker prompts, loaded directly on every turn.
+- `.claude-plugin/`: Claude Code plugin and marketplace manifests.
+- `agents/`: thin Claude Code bridges for explorer and general-purpose workers.
+- `scripts/bump-version.sh`: synchronized CLI/plugin/marketplace version bump.
 - `tests/test_glm_agent.sh`: hermetic CLI tests using a fake `claude` binary.
+- `tests/test_plugin.sh`: plugin schema, bridge contract, and version tests.
 - `README.md`: public installation, usage, behavior, and security documentation.
 - `LICENSE`: MIT License terms for the project.
 - `CLAUDE.md`: compatibility symlink; never replace it with an independent copy.
@@ -81,14 +86,21 @@ Run before declaring work complete:
 
 ```bash
 bash tests/test_glm_agent.sh
-bash -n glm-agent tests/test_glm_agent.sh
-shellcheck glm-agent tests/test_glm_agent.sh
+bash tests/test_plugin.sh
+bash -n glm-agent tests/test_glm_agent.sh tests/test_plugin.sh scripts/bump-version.sh
+shellcheck glm-agent tests/test_glm_agent.sh tests/test_plugin.sh scripts/bump-version.sh
+claude plugin validate --strict .
 ```
 
 If `shellcheck` is unavailable, report that fact rather than silently skipping
 the check. For changes to live Z.ai integration, run a narrowly scoped real
 smoke test only when credentials and authorization are already available, and
 never print or inspect the key itself.
+
+For releases, run `scripts/bump-version.sh <major.minor.patch>` rather than
+editing version fields individually. The CLI, plugin manifest, and marketplace
+entry must remain identical and the parity tests must pass. The bump script
+does not commit, tag, or push.
 
 Also inspect the final diff and confirm that documentation examples match the
 current command output and exit-status behavior.

@@ -58,11 +58,13 @@ plugin_json="$REPO_DIR/.claude-plugin/plugin.json"
 marketplace_json="$REPO_DIR/.claude-plugin/marketplace.json"
 explorer_agent="$REPO_DIR/agents/explorer.md"
 general_agent="$REPO_DIR/agents/general-purpose.md"
+bump_script="$REPO_DIR/scripts/bump-version.sh"
 
 assert_file 'plugin manifest exists' "$plugin_json"
 assert_file 'marketplace manifest exists' "$marketplace_json"
 assert_file 'explorer agent exists' "$explorer_agent"
 assert_file 'general-purpose agent exists' "$general_agent"
+assert_file 'version bump script exists' "$bump_script"
 
 if [[ -f "$plugin_json" ]]; then
   assert_eq 'plugin name' 'glm-agent' "$(jq -r '.name' "$plugin_json")"
@@ -72,12 +74,65 @@ if [[ -f "$marketplace_json" ]]; then
     "$(jq -r '.plugins[] | select(.name == "glm-agent") | .source' \
       "$marketplace_json")"
 fi
+
+if [[ -f "$plugin_json" && -f "$marketplace_json" ]]; then
+  cli_version="$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$REPO_DIR/glm-agent")"
+  plugin_version="$(jq -r '.version' "$plugin_json")"
+  marketplace_version="$(jq -r \
+    '.plugins[] | select(.name == "glm-agent") | .version' \
+    "$marketplace_json")"
+  assert_eq 'CLI and plugin versions match' "$cli_version" "$plugin_version"
+  assert_eq 'CLI and marketplace versions match' "$cli_version" \
+    "$marketplace_version"
+fi
 if [[ -f "$explorer_agent" ]]; then
   explorer_content="$(cat "$explorer_agent")"
   assert_contains 'explorer uses plugin-root CLI' "$explorer_content" \
     "\${CLAUDE_PLUGIN_ROOT}/glm-agent"
   assert_contains 'explorer does not own worktrees' "$explorer_content" \
     'Never create, switch, or delete a worktree.'
+fi
+
+if [[ -x "$bump_script" ]]; then
+  fixture="$TEST_ROOT/version fixture"
+  mkdir -p "$fixture"
+  cp -R "$REPO_DIR/." "$fixture/"
+  "$fixture/scripts/bump-version.sh" 0.2.1
+  assert_eq 'bump updates CLI' 'glm-agent 0.2.1' \
+    "$("$fixture/glm-agent" --version)"
+  assert_eq 'bump updates plugin manifest' '0.2.1' \
+    "$(jq -r '.version' "$fixture/.claude-plugin/plugin.json")"
+  assert_eq 'bump updates marketplace' '0.2.1' \
+    "$(jq -r '.plugins[0].version' \
+      "$fixture/.claude-plugin/marketplace.json")"
+
+  invalid_fixture="$TEST_ROOT/invalid version fixture"
+  mkdir -p "$invalid_fixture"
+  cp -R "$REPO_DIR/." "$invalid_fixture/"
+  before_versions="$(shasum \
+    "$invalid_fixture/glm-agent" \
+    "$invalid_fixture/.claude-plugin/plugin.json" \
+    "$invalid_fixture/.claude-plugin/marketplace.json")"
+  for invalid_version in '1.2' 'v1.2.3'; do
+    if "$invalid_fixture/scripts/bump-version.sh" "$invalid_version" \
+      >"$TEST_ROOT/invalid.out" 2>"$TEST_ROOT/invalid.err"; then
+      fail "invalid version $invalid_version is rejected" 'command succeeded'
+    else
+      pass "invalid version $invalid_version is rejected"
+    fi
+  done
+  if "$invalid_fixture/scripts/bump-version.sh" \
+    >"$TEST_ROOT/empty.out" 2>"$TEST_ROOT/empty.err"; then
+    fail 'empty version is rejected' 'command succeeded'
+  else
+    pass 'empty version is rejected'
+  fi
+  after_versions="$(shasum \
+    "$invalid_fixture/glm-agent" \
+    "$invalid_fixture/.claude-plugin/plugin.json" \
+    "$invalid_fixture/.claude-plugin/marketplace.json")"
+  assert_eq 'invalid versions do not change files' "$before_versions" \
+    "$after_versions"
 fi
 if [[ -f "$general_agent" ]]; then
   general_content="$(cat "$general_agent")"

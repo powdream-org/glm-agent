@@ -166,3 +166,13 @@
   persistent worker를 명시적 close 전까지 유지한다.
 - 검증: `tests/test_plugin.sh` 10/10 통과(공백 포함 경로 포함),
   `claude plugin validate --strict .` 통과, Bash 문법 검사와 shellcheck 통과.
+
+### Task 4 — 버전 동기화
+
+- RED: 세 버전의 현재 parity는 확인됐지만 bump script가 없어 테스트 1건이
+  실패했다.
+- GREEN: 임시 파일 세 개를 모두 먼저 생성·검증한 뒤 교체하는 Bash 3.2 호환
+  `scripts/bump-version.sh`를 추가했다. 잘못된 semver는 파일을 바꾸지 않는다.
+- `AGENTS.md`에 plugin 구조, 전체 gate, synchronized release 절차를 추가했다.
+- 검증: plugin test 20/20, script/test 문법 검사와 shellcheck, Claude strict
+  validation 통과. 실제 checkout의 세 버전은 모두 `0.2.0`으로 유지됐다.
