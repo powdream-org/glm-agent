@@ -1,0 +1,685 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROGRAM="${0##*/}"
+VERSION="0.2.0"
+
+GLM_AGENT_HOME="${GLM_AGENT_HOME:-$HOME/.glm}"
+if [[ "$GLM_AGENT_HOME" != /* ]]; then
+  GLM_AGENT_HOME="$PWD/$GLM_AGENT_HOME"
+fi
+
+AUTH_FILE="$GLM_AGENT_HOME/.env.auth"
+WORKERS_DIR="$GLM_AGENT_HOME/workers"
+
+ZAI_BASE_URL="${ZAI_BASE_URL:-https://api.z.ai/api/anthropic}"
+ZAI_HAIKU_MODEL="${ZAI_HAIKU_MODEL:-glm-5.3-flash[1m]}"
+ZAI_SONNET_MODEL="${ZAI_SONNET_MODEL:-glm-5.3[1m]}"
+ZAI_OPUS_MODEL="${ZAI_OPUS_MODEL:-glm-5.3[1m]}"
+CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
+
+usage() {
+  cat <<'EOF'
+glm-agent - persistent GLM coding worker for agent orchestration
+
+USAGE
+  glm-agent api-key [key]
+  glm-agent run <prompt>
+  glm-agent start [--model <alias>] [--cwd <directory>] <task>
+  glm-agent send <worker-id> <message>
+  glm-agent result <worker-id>
+  glm-agent status <worker-id>
+  glm-agent list
+  glm-agent close <worker-id>
+  glm-agent --help
+  glm-agent --version
+
+DESCRIPTION
+  glm-agent runs GLM through Claude Code using Z.ai's Anthropic-compatible
+  endpoint. A worker is durable across invocations: start creates a Claude
+  session and send resumes that same session in its original directory with
+  its original model.
+
+  stdout is compact and machine-readable. Detailed reports, raw Claude JSON,
+  and stderr are stored under ~/.glm/workers/<worker-id>/.
+
+COMMANDS
+  api-key [key]
+      Save the Z.ai API key. With no argument, read it from an interactive
+      hidden prompt so it does not enter shell history. The stored key takes
+      second priority to an explicit ZAI_API_KEY environment variable.
+
+  run <prompt>
+      Run a one-shot diagnostic GLM Claude Code session. This does not create
+      a persistent worker and prints Claude's normal response.
+
+  start [--model <alias>] [--cwd <directory>] <task>
+      Create a worker and execute its first turn. Defaults are model=sonnet
+      and cwd=current directory.
+
+      Output:
+        WORKER_ID=<id>
+        TURN=1
+        STATUS=DONE|BLOCKED|INVALID
+        RESULT=<absolute-path>
+
+  send <worker-id> <message>
+      Execute another turn by resuming the stored Claude session. send always
+      uses the worker's original cwd and model.
+
+  result <worker-id>
+      Print the absolute path to the latest valid durable result file.
+
+  status <worker-id>
+      Print worker status without invoking Claude or exposing its session ID.
+
+  list
+      List known workers and their current status.
+
+  close <worker-id>
+      Mark a worker closed. This does not delete its history. A closed worker
+      remains available to result and status but rejects send.
+
+WORKER FILES
+  ~/.glm/workers/<worker-id>/
+    meta
+    task.md
+    system-prompt.md
+    turns/NNNN/
+      prompt.md
+      response.json
+      stderr.log
+      result.md
+
+STATUS VALUES
+  DONE      The worker produced a valid result ending in STATUS: DONE.
+  BLOCKED   The worker produced a valid result ending in STATUS: BLOCKED.
+  INVALID   Claude failed, returned malformed data, or violated the result
+            protocol. Raw response and stderr files remain available.
+  RUNNING   A turn is currently executing or was interrupted externally.
+  NEW       A worker exists but no turn has begun.
+
+WORKER CONTRACT
+  Every turn receives an absolute GLM_RESULT_FILE path. The worker must do and
+  verify the requested work, write the full report to that file, read it back,
+  and make its final line exactly STATUS: DONE or STATUS: BLOCKED. Starting a
+  background process alone is not completion. The wrapper classifies missing
+  or malformed results and invocation failures as INVALID.
+
+ORCHESTRATOR WORKFLOW
+  1. glm-agent start "<task>"
+  2. Read RESULT and inspect the actual changes.
+  3. glm-agent send <worker-id> "<review feedback>" when correction is needed.
+  4. Repeat review and send until satisfactory.
+  5. glm-agent close <worker-id>
+
+SECURITY
+  ~/.glm is mode 0700 and ~/.glm/.env.auth is mode 0600. The API key is never
+  printed by glm-agent. Worker status output omits the Claude session ID.
+
+  start and send use Claude Code's --dangerously-skip-permissions mode so a
+  headless worker can edit files and run verification without an interactive
+  approval prompt. Start workers only in repositories you trust.
+
+EXIT STATUS
+  0  Command succeeded; DONE and BLOCKED are both successful worker turns.
+  1  Claude invocation or worker result protocol failed (STATUS=INVALID).
+  2  Invalid CLI usage, configuration, dependency, or worker state.
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+  exit 2
+}
+
+require_command() {
+  local command_name="$1"
+  command -v "$command_name" >/dev/null 2>&1 ||
+    die "required command not found: $command_name"
+}
+
+validate_single_line() {
+  local label="$1"
+  local value="$2"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] ||
+    die "$label must be a single line"
+}
+
+validate_worker_id() {
+  local worker_id="$1"
+  [[ "$worker_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+    die "invalid worker id: $worker_id"
+}
+
+ensure_state_home() {
+  mkdir -p "$GLM_AGENT_HOME"
+  chmod 700 "$GLM_AGENT_HOME"
+}
+
+load_api_key() {
+  if [[ -n "${ZAI_API_KEY:-}" ]]; then
+    return 0
+  fi
+
+  [[ -f "$AUTH_FILE" ]] ||
+    die "API key is not configured. Run: $PROGRAM api-key"
+
+  ZAI_API_KEY="$(<"$AUTH_FILE")"
+  [[ -n "$ZAI_API_KEY" ]] || die "stored API key is empty"
+}
+
+require_execution_dependencies() {
+  require_command claude
+  require_command jq
+}
+
+run_glm_claude() {
+  require_command claude
+
+  env \
+    -u CLAUDECODE \
+    ANTHROPIC_BASE_URL="$ZAI_BASE_URL" \
+    ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL="$ZAI_HAIKU_MODEL" \
+    ANTHROPIC_DEFAULT_SONNET_MODEL="$ZAI_SONNET_MODEL" \
+    ANTHROPIC_DEFAULT_OPUS_MODEL="$ZAI_OPUS_MODEL" \
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    API_TIMEOUT_MS=3000000 \
+    claude "$@"
+}
+
+new_worker_id() {
+  printf '%s-%s-%s\n' \
+    "$(date -u +%Y%m%dT%H%M%SZ)" \
+    "$$" \
+    "${RANDOM:-0}"
+}
+
+worker_dir() {
+  printf '%s/%s\n' "$WORKERS_DIR" "$1"
+}
+
+meta_get() {
+  local dir="$1"
+  local key="$2"
+  sed -n "s/^${key}=//p" "$dir/meta" | head -n 1
+}
+
+meta_set() {
+  local dir="$1"
+  local key="$2"
+  local value="$3"
+  local tmp
+
+  validate_single_line "metadata value for $key" "$value"
+  tmp="$(mktemp "$dir/.meta.XXXXXX")"
+  chmod 600 "$tmp"
+  grep -v "^${key}=" "$dir/meta" >"$tmp" || true
+  printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  mv "$tmp" "$dir/meta"
+}
+
+require_worker() {
+  local worker_id="$1"
+  local dir
+
+  validate_worker_id "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+  [[ -f "$dir/meta" ]] || die "worker not found: $worker_id"
+}
+
+write_system_prompt() {
+  local file="$1"
+
+  cat >"$file" <<'EOF'
+You are a persistent implementation worker controlled by a parent orchestrator.
+Perform the delegated implementation, investigation, debugging, testing, or
+refactoring work yourself. Do not merely describe what someone else should do.
+
+<execution_contract>
+Starting a background process is not completion.
+
+When completion depends on a command or process, observe its exit status and
+output and verify the expected effect. Do not launch required work
+asynchronously and terminate before observing its result. A persistent
+background process is allowed only when the task genuinely requires one; in
+that case verify that it is usable and finish the work that depends on it.
+
+Before reporting DONE:
+- inspect the resulting changes and final state
+- run relevant tests and checks
+- investigate and fix failures when reasonably possible
+- verify the requested outcome, not just that commands were started
+
+If the work cannot be completed, report BLOCKED with the exact blocker instead
+of claiming success.
+</execution_contract>
+
+<durable_result_contract>
+GLM_RESULT_FILE is the canonical result file for this turn and is an absolute
+path. Before terminating you MUST:
+
+1. Write the complete final report to exactly GLM_RESULT_FILE.
+2. Read the result file back.
+3. Verify that it contains the intended report.
+4. Ensure its final line is exactly one of these two lines:
+
+STATUS: DONE
+STATUS: BLOCKED
+
+Use this report structure:
+
+# Summary
+Concise description of the outcome.
+
+# Changes
+Files and behavior changed, or "None".
+
+# Verification
+Commands and checks performed with their outcomes.
+
+# Remaining Issues
+Anything the parent orchestrator should know, or "None".
+
+The conversational response is not durable storage. The result file is
+canonical. Do not place any text after the final STATUS line.
+</durable_result_contract>
+
+<continuation_contract>
+This session may be resumed. On later turns, keep useful context, inspect the
+current working tree, act on the new instruction or review feedback, avoid
+repeating finished work, and write a new result file for that turn.
+</continuation_contract>
+EOF
+  chmod 600 "$file"
+}
+
+print_turn_control() {
+  local dir="$1"
+  local turn="$2"
+  local status="$3"
+  local result_file="$4"
+
+  printf 'WORKER_ID=%s\n' "$(meta_get "$dir" worker_id)"
+  printf 'TURN=%s\n' "$turn"
+  printf 'STATUS=%s\n' "$status"
+  printf 'RESULT=%s\n' "$result_file"
+}
+
+invalidate_turn() {
+  local dir="$1"
+  local turn="$2"
+  local result_file="$3"
+  local error="$4"
+
+  meta_set "$dir" status "INVALID"
+  print_turn_control "$dir" "$turn" "INVALID" "$result_file"
+  printf 'ERROR=%s\n' "$error"
+  return 1
+}
+
+run_turn() {
+  local worker_id="$1"
+  local prompt="$2"
+  local dir
+  local model
+  local cwd
+  local current_turn
+  local turn
+  local turn_label
+  local session_id
+  local turn_dir
+  local prompt_file
+  local response_file
+  local stderr_file
+  local result_file
+  local system_prompt_file
+  local exit_code=0
+  local returned_session_id
+  local result_status
+  local system_prompt
+  local -a args
+
+  require_execution_dependencies
+  load_api_key
+  require_worker "$worker_id"
+
+  dir="$(worker_dir "$worker_id")"
+  model="$(meta_get "$dir" model)"
+  cwd="$(meta_get "$dir" cwd)"
+  current_turn="$(meta_get "$dir" turn)"
+  session_id="$(meta_get "$dir" claude_session_id)"
+
+  [[ -n "$model" ]] || die "worker has no model: $worker_id"
+  [[ -n "$cwd" ]] || die "worker has no working directory: $worker_id"
+  [[ -d "$cwd" ]] || die "worker working directory does not exist: $cwd"
+  [[ "$current_turn" =~ ^[0-9]+$ ]] ||
+    die "worker has invalid turn metadata: $worker_id"
+
+  turn="$((10#$current_turn + 1))"
+  printf -v turn_label '%04d' "$turn"
+  turn_dir="$dir/turns/$turn_label"
+  prompt_file="$turn_dir/prompt.md"
+  response_file="$turn_dir/response.json"
+  stderr_file="$turn_dir/stderr.log"
+  result_file="$turn_dir/result.md"
+  system_prompt_file="$dir/system-prompt.md"
+  validate_single_line "result file path" "$result_file"
+
+  mkdir "$turn_dir" || die "turn already exists: $worker_id/$turn_label"
+  printf '%s\n' "$prompt" >"$prompt_file"
+  chmod 600 "$prompt_file"
+  write_system_prompt "$system_prompt_file"
+
+  meta_set "$dir" turn "$turn"
+  meta_set "$dir" status "RUNNING"
+
+  system_prompt="$(<"$system_prompt_file")"
+  system_prompt+=$'\n\n<current_turn_result_file>\n'
+  system_prompt+="For this turn, GLM_RESULT_FILE is exactly this absolute path:"
+  system_prompt+=$'\n'
+  system_prompt+="$result_file"
+  system_prompt+=$'\nWrite the report to that exact path, then read it back as required.\n</current_turn_result_file>'
+
+  args=(
+    -p
+    --model "$model"
+    --output-format json
+    --dangerously-skip-permissions
+    --append-system-prompt "$system_prompt"
+  )
+  if [[ -n "$session_id" ]]; then
+    args+=(--resume "$session_id")
+  fi
+
+  (
+    cd "$cwd"
+    export GLM_RESULT_FILE="$result_file"
+    run_glm_claude "${args[@]}" "$prompt"
+  ) >"$response_file" 2>"$stderr_file" || exit_code=$?
+
+  chmod 600 "$response_file" "$stderr_file"
+
+  if ((exit_code != 0)); then
+    invalidate_turn "$dir" "$turn" "$result_file" "claude-exit-$exit_code"
+    return 1
+  fi
+
+  if ! returned_session_id="$(
+    jq -er '
+      select(type == "object" and (.is_error != true))
+      | .session_id
+      | select(type == "string" and length > 0)
+    ' "$response_file" 2>/dev/null
+  )"; then
+    invalidate_turn "$dir" "$turn" "$result_file" "invalid-response"
+    return 1
+  fi
+
+  if [[ -n "$session_id" && "$returned_session_id" != "$session_id" ]]; then
+    invalidate_turn "$dir" "$turn" "$result_file" "unexpected-session-id"
+    return 1
+  fi
+
+  if [[ -z "$session_id" ]]; then
+    meta_set "$dir" claude_session_id "$returned_session_id"
+  fi
+
+  if [[ ! -s "$result_file" ]]; then
+    invalidate_turn "$dir" "$turn" "$result_file" "result-file-missing"
+    return 1
+  fi
+  chmod 600 "$result_file"
+
+  case "$(tail -n 1 "$result_file")" in
+    'STATUS: DONE')
+      result_status="DONE"
+      ;;
+    'STATUS: BLOCKED')
+      result_status="BLOCKED"
+      ;;
+    *)
+      invalidate_turn "$dir" "$turn" "$result_file" "result-status-invalid"
+      return 1
+      ;;
+  esac
+
+  meta_set "$dir" status "$result_status"
+  meta_set "$dir" latest_result "$result_file"
+  print_turn_control "$dir" "$turn" "$result_status" "$result_file"
+}
+
+cmd_api_key() {
+  (($# <= 1)) || die "api-key accepts at most one argument"
+
+  local key="${1:-}"
+  if [[ -z "$key" ]]; then
+    [[ -t 0 ]] || die "api-key requires a key when stdin is not interactive"
+    printf 'Z.ai API key: ' >&2
+    IFS= read -r -s key
+    printf '\n' >&2
+  fi
+  [[ -n "$key" ]] || die "API key must not be empty"
+
+  ensure_state_home
+  local tmp
+  tmp="$(mktemp "$GLM_AGENT_HOME/.env.auth.XXXXXX")"
+  chmod 600 "$tmp"
+  printf '%s' "$key" >"$tmp"
+  mv "$tmp" "$AUTH_FILE"
+  chmod 600 "$AUTH_FILE"
+
+  printf 'API_KEY=SAVED\n'
+  printf 'AUTH_FILE=%s\n' "$AUTH_FILE"
+}
+
+cmd_run() {
+  (($# > 0)) || die "run requires a prompt"
+  load_api_key
+  local prompt="$*"
+  (
+    unset GLM_RESULT_FILE
+    run_glm_claude -p --model "$CLAUDE_MODEL" "$prompt"
+  )
+}
+
+cmd_start() {
+  local model="$CLAUDE_MODEL"
+  local cwd="$PWD"
+
+  while (($#)); do
+    case "$1" in
+      --model)
+        (($# >= 2)) || die "--model requires a value"
+        model="$2"
+        shift 2
+        ;;
+      --cwd)
+        (($# >= 2)) || die "--cwd requires a value"
+        cwd="$2"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        return 0
+        ;;
+      --*)
+        die "unknown option for start: $1"
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  (($# > 0)) || die "start requires a task"
+  local task="$*"
+
+  validate_single_line "model" "$model"
+  [[ -n "$model" ]] || die "model must not be empty"
+  [[ -d "$cwd" ]] || die "working directory does not exist: $cwd"
+  cwd="$(cd "$cwd" && pwd -P)"
+  validate_single_line "working directory" "$cwd"
+
+  require_execution_dependencies
+  load_api_key
+  ensure_state_home
+  mkdir -p "$WORKERS_DIR"
+  chmod 700 "$WORKERS_DIR"
+
+  local worker_id
+  local dir
+  worker_id="$(new_worker_id)"
+  dir="$(worker_dir "$worker_id")"
+  mkdir "$dir"
+  chmod 700 "$dir"
+  mkdir "$dir/turns"
+  chmod 700 "$dir/turns"
+
+  (
+    umask 077
+    cat >"$dir/meta" <<EOF
+worker_id=$worker_id
+claude_session_id=
+model=$model
+cwd=$cwd
+turn=0
+status=NEW
+closed=false
+latest_result=
+EOF
+    printf '%s\n' "$task" >"$dir/task.md"
+  )
+
+  run_turn "$worker_id" "$task"
+}
+
+cmd_send() {
+  (($# >= 2)) || die "send requires a worker-id and message"
+
+  local worker_id="$1"
+  shift
+  local message="$*"
+  local dir
+
+  require_worker "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+  [[ "$(meta_get "$dir" closed)" != "true" ]] ||
+    die "worker is closed: $worker_id"
+  [[ -n "$(meta_get "$dir" claude_session_id)" ]] ||
+    die "worker has no Claude session: $worker_id"
+
+  run_turn "$worker_id" "$message"
+}
+
+cmd_result() {
+  (($# == 1)) || die "result requires a worker-id"
+
+  local worker_id="$1"
+  local dir
+  local result
+  require_worker "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+  result="$(meta_get "$dir" latest_result)"
+  [[ -n "$result" && -f "$result" ]] ||
+    die "worker has no valid result: $worker_id"
+  printf '%s\n' "$result"
+}
+
+cmd_status() {
+  (($# == 1)) || die "status requires a worker-id"
+
+  local worker_id="$1"
+  local dir
+  require_worker "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+
+  printf 'WORKER_ID=%s\n' "$worker_id"
+  printf 'STATUS=%s\n' "$(meta_get "$dir" status)"
+  printf 'TURN=%s\n' "$(meta_get "$dir" turn)"
+  printf 'MODEL=%s\n' "$(meta_get "$dir" model)"
+  printf 'CWD=%s\n' "$(meta_get "$dir" cwd)"
+  printf 'CLOSED=%s\n' "$(meta_get "$dir" closed)"
+  printf 'RESULT=%s\n' "$(meta_get "$dir" latest_result)"
+}
+
+cmd_list() {
+  (($# == 0)) || die "list accepts no arguments"
+  [[ -d "$WORKERS_DIR" ]] || return 0
+
+  local dir
+  for dir in "$WORKERS_DIR"/*; do
+    [[ -f "$dir/meta" ]] || continue
+    printf 'WORKER_ID=%s\tSTATUS=%s\tTURN=%s\tCLOSED=%s\tCWD=%s\n' \
+      "$(meta_get "$dir" worker_id)" \
+      "$(meta_get "$dir" status)" \
+      "$(meta_get "$dir" turn)" \
+      "$(meta_get "$dir" closed)" \
+      "$(meta_get "$dir" cwd)"
+  done
+}
+
+cmd_close() {
+  (($# == 1)) || die "close requires a worker-id"
+
+  local worker_id="$1"
+  local dir
+  require_worker "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+  meta_set "$dir" closed "true"
+
+  printf 'WORKER_ID=%s\n' "$worker_id"
+  printf 'CLOSED=true\n'
+}
+
+main() {
+  local command="${1:-}"
+
+  case "$command" in
+    --help|-h|help|"")
+      usage
+      ;;
+    --version|version)
+      printf '%s %s\n' "$PROGRAM" "$VERSION"
+      ;;
+    api-key)
+      shift
+      cmd_api_key "$@"
+      ;;
+    run)
+      shift
+      cmd_run "$@"
+      ;;
+    start)
+      shift
+      cmd_start "$@"
+      ;;
+    send)
+      shift
+      cmd_send "$@"
+      ;;
+    result)
+      shift
+      cmd_result "$@"
+      ;;
+    status)
+      shift
+      cmd_status "$@"
+      ;;
+    list)
+      shift
+      cmd_list "$@"
+      ;;
+    close)
+      shift
+      cmd_close "$@"
+      ;;
+    *)
+      die "unknown command: $command (try '$PROGRAM --help')"
+      ;;
+  esac
+}
+
+main "$@"
