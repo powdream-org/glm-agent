@@ -152,6 +152,24 @@ if [[ "$prompt" == *EXIT_ZERO_ZAI_ERROR* ]]; then
   exit 0
 fi
 
+if [[ "$prompt" == *EXIT_ZERO_SUBTYPE_ERROR* ]]; then
+  printf '%s\n' \
+    '{"type":"result","subtype":"error","is_error":false,"session_id":"session-1","result":"provider failed with code 1305"}'
+  exit 0
+fi
+
+if [[ "$prompt" == *EXIT_ZERO_ERROR_OBJECT* ]]; then
+  printf '%s\n' \
+    '{"type":"result","subtype":"success","session_id":"session-1","error":{"code":1310,"message":"quota exhausted"}}'
+  exit 0
+fi
+
+if [[ "$prompt" == *EXIT_ZERO_RESULT_ERROR* ]]; then
+  printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":false,"session_id":"session-1","result":"Z.ai quota error: code 1113 quota exhausted"}'
+  exit 0
+fi
+
 if [[ "$prompt" =~ ZAI_ERROR_([0-9]+) ]]; then
   zai_code="${BASH_REMATCH[1]}"
   printf '{"error":{"code":"%s","message":"simulated provider error"}}\n' \
@@ -322,6 +340,11 @@ meta_get_test() {
   sed -n "s/^${key}=//p" "$meta" | head -n 1
 }
 
+process_start_test() {
+  ps -o lstart= -p "$1" 2>/dev/null | sed -e 's/^[[:space:]]*//' \
+    -e 's/[[:space:]]*$//'
+}
+
 help_output="$($SCRIPT --help)"
 assert_contains 'help documents result command' "$help_output" 'glm-agent result <worker-id>'
 assert_contains 'help documents durable result status' "$help_output" 'STATUS=DONE|BLOCKED|INVALID'
@@ -470,6 +493,27 @@ assert_contains 'exit-zero quota code is retained' "$OUTPUT" \
 assert_contains 'exit-zero quota error recommends fallback' "$OUTPUT" \
   'FALLBACK_RECOMMENDED=true'
 
+capture "$SCRIPT" send "$worker_id" 'EXIT_ZERO_SUBTYPE_ERROR'
+assert_eq 'exit-zero subtype error fails the turn' '1' "$RC"
+assert_contains 'subtype-only provider error is classified' "$OUTPUT" \
+  'ERROR_KIND=provider-transient'
+assert_contains 'subtype-only provider code is retained' "$OUTPUT" \
+  'PROVIDER_CODE=1305'
+
+capture "$SCRIPT" send "$worker_id" 'EXIT_ZERO_ERROR_OBJECT'
+assert_eq 'exit-zero error object fails the turn' '1' "$RC"
+assert_contains 'error-object quota is classified' "$OUTPUT" \
+  'ERROR_KIND=quota-exhausted'
+assert_contains 'error-object provider code is retained' "$OUTPUT" \
+  'PROVIDER_CODE=1310'
+
+capture "$SCRIPT" send "$worker_id" 'EXIT_ZERO_RESULT_ERROR'
+assert_eq 'exit-zero result text error fails the turn' '1' "$RC"
+assert_contains 'result-text quota is classified' "$OUTPUT" \
+  'ERROR_KIND=quota-exhausted'
+assert_contains 'result-text provider code is retained' "$OUTPUT" \
+  'PROVIDER_CODE=1113'
+
 export FAKE_CLAUDE_BLOCK_STARTED="$TEST_ROOT/error-reset.started"
 export FAKE_CLAUDE_BLOCK_RELEASE="$TEST_ROOT/error-reset.release"
 capture "$SCRIPT" send --async "$worker_id" \
@@ -520,12 +564,46 @@ else
 fi
 unset FAKE_CLAUDE_BLOCK_STARTED FAKE_CLAUDE_BLOCK_RELEASE
 
+sync_interrupt_started="$TEST_ROOT/sync-interrupt.started"
+sync_interrupt_release="$TEST_ROOT/sync-interrupt.release"
+sync_interrupt_child_file="$TEST_ROOT/sync-interrupt.child.pid"
+sync_interrupt_pgid_file="$TEST_ROOT/sync-interrupt.provider.pgid"
+export FAKE_CLAUDE_HANG_STARTED="$sync_interrupt_started"
+export FAKE_CLAUDE_HANG_RELEASE="$sync_interrupt_release"
+export FAKE_CLAUDE_CHILD_PID_FILE="$sync_interrupt_child_file"
+export FAKE_CLAUDE_PROVIDER_PGID_FILE="$sync_interrupt_pgid_file"
+"$SCRIPT" start --cwd "$PROJECT" 'HANG_WITH_CHILD sync interruption' \
+  >"$TEST_ROOT/sync-interrupt.out" 2>"$TEST_ROOT/sync-interrupt.err" &
+sync_wrapper_pid=$!
+for _ in {1..500}; do
+  [[ -f "$sync_interrupt_started" && -s "$sync_interrupt_child_file" ]] && break
+  sleep 0.01
+done
+sync_child_pid="$(cat "$sync_interrupt_child_file" 2>/dev/null || true)"
+kill -TERM "$sync_wrapper_pid" 2>/dev/null || true
+for _ in {1..100}; do
+  if [[ -z "$sync_child_pid" ]] || ! kill -0 "$sync_child_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.01
+done
+if [[ -n "$sync_child_pid" ]] && ! kill -0 "$sync_child_pid" 2>/dev/null; then
+  pass 'sync interruption terminates provider child processes'
+else
+  fail 'sync interruption terminates provider child processes' \
+    "provider child remains after wrapper TERM: $sync_child_pid"
+fi
+: >"$sync_interrupt_release"
+wait "$sync_wrapper_pid" 2>/dev/null || true
+unset FAKE_CLAUDE_HANG_STARTED FAKE_CLAUDE_HANG_RELEASE \
+  FAKE_CLAUDE_CHILD_PID_FILE FAKE_CLAUDE_PROVIDER_PGID_FILE
+
 async_started="$TEST_ROOT/async.started"
 async_release="$TEST_ROOT/async.release"
 async_receipt="$TEST_ROOT/async.receipt"
 export FAKE_CLAUDE_BLOCK_STARTED="$async_started"
 export FAKE_CLAUDE_BLOCK_RELEASE="$async_release"
-if /opt/homebrew/bin/bash -c '
+if PATH="$FAKE_BIN:/usr/bin:/bin" /bin/bash -c '
   set -m
   "$1" start --async --role explorer --model haiku --cwd "$2" \
     "WAIT_FOR_RELEASE async orphaned launcher" >"$3"
@@ -664,6 +742,53 @@ else
     "child $cancel_child_pid remains in provider group $cancel_provider_pgid"
 fi
 
+capture "$SCRIPT" start --cwd "$PROJECT" 'forged provider identity fixture'
+assert_eq 'forged provider fixture starts' '0' "$RC"
+forged_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+forged_dir="$GLM_AGENT_HOME/workers/$forged_worker_id"
+forged_generation='forged-generation'
+forged_old_marker="$forged_dir/active/cancel.requested"
+forged_new_marker="$forged_dir/cancel.$forged_generation.requested"
+/bin/bash -c '
+  while [[ ! -f "$1" && ! -f "$2" ]]; do sleep 0.01; done
+' _ "$forged_old_marker" "$forged_new_marker" \
+  "_execute-turn $forged_worker_id 2" &
+forged_runner_pid=$!
+set -m
+sleep 60 &
+protected_provider_pid=$!
+set +m
+protected_provider_pgid="$(ps -o pgid= -p "$protected_provider_pid" | tr -d ' ')"
+mkdir "$forged_dir/turns/0002" "$forged_dir/active"
+printf '%s\n' 'headless' >"$forged_dir/turns/0002/mode"
+printf '%s\n' 'forged provider must survive' >"$forged_dir/turns/0002/prompt.md"
+cat >"$forged_dir/active/state" <<EOF
+generation=$forged_generation
+mode=headless
+turn=2
+supervision=async
+runner_pid=$forged_runner_pid
+runner_start=$(process_start_test "$forged_runner_pid")
+provider_pid=$protected_provider_pid
+provider_pgid=$protected_provider_pgid
+provider_start=forged-start-identity
+started_at=$(date +%s)
+EOF
+sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
+  "$forged_dir/meta" >"$forged_dir/meta.next"
+mv "$forged_dir/meta.next" "$forged_dir/meta"
+capture "$SCRIPT" cancel "$forged_worker_id"
+assert_eq 'cancel handles forged provider identity safely' '0' "$RC"
+if kill -0 "$protected_provider_pid" 2>/dev/null; then
+  pass 'cancel does not signal a provider with mismatched start identity'
+else
+  fail 'cancel does not signal a provider with mismatched start identity' \
+    "protected provider group was signalled: $protected_provider_pgid"
+fi
+kill -TERM -- "-$protected_provider_pgid" 2>/dev/null || true
+wait "$protected_provider_pid" 2>/dev/null || true
+wait "$forged_runner_pid" 2>/dev/null || true
+
 capture "$SCRIPT" cancel "$cancel_worker_id"
 assert_eq 'repeated cancel is idempotent' '0' "$RC"
 assert_contains 'repeated cancel reports terminal worker' "$OUTPUT" \
@@ -684,11 +809,15 @@ mkdir "$pre_cancel_dir/turns/0002" "$pre_cancel_dir/active"
 printf '%s\n' 'headless' >"$pre_cancel_dir/turns/0002/mode"
 printf '%s\n' 'provider must not start' >"$pre_cancel_dir/turns/0002/prompt.md"
 cat >"$pre_cancel_dir/active/state" <<EOF
+generation=pre-provider-generation
 mode=headless
 turn=2
 supervision=async
 runner_pid=
+runner_start=
+provider_pid=
 provider_pgid=
+provider_start=
 started_at=$(date +%s)
 EOF
 sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
@@ -697,7 +826,7 @@ mv "$pre_cancel_dir/meta.next" "$pre_cancel_dir/meta"
 "$SCRIPT" _execute-turn "$pre_cancel_worker_id" 2 \
   >"$pre_cancel_dir/turns/0002/runner.log" 2>&1 &
 pre_cancel_runner_pid=$!
-sed "s/^runner_pid=.*/runner_pid=$pre_cancel_runner_pid/" \
+sed "s/^runner_pid=.*/runner_pid=$pre_cancel_runner_pid/; s|^runner_start=.*|runner_start=$(process_start_test "$pre_cancel_runner_pid")|" \
   "$pre_cancel_dir/active/state" >"$pre_cancel_dir/active/state.next"
 mv "$pre_cancel_dir/active/state.next" "$pre_cancel_dir/active/state"
 pre_cancel_started_at="$(date +%s)"
@@ -808,11 +937,15 @@ active_tui_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
 active_tui_dir="$GLM_AGENT_HOME/workers/$active_tui_id"
 mkdir "$active_tui_dir/active"
 cat >"$active_tui_dir/active/state" <<EOF
+generation=active-tui-generation
 mode=headless
 turn=2
 supervision=sync
 runner_pid=$$
+runner_start=$(process_start_test $$)
+provider_pid=
 provider_pgid=
+provider_start=
 started_at=$(date +%s)
 EOF
 capture "$SCRIPT" tui "$active_tui_id"
@@ -851,10 +984,15 @@ stale_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
 stale_dir="$GLM_AGENT_HOME/workers/$stale_worker_id"
 mkdir "$stale_dir/active"
 cat >"$stale_dir/active/state" <<EOF
+generation=stale-generation
 mode=headless
 turn=2
+supervision=async
 runner_pid=99999999
+runner_start=stale-process-start
+provider_pid=
 provider_pgid=
+provider_start=
 started_at=1
 EOF
 sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
@@ -870,6 +1008,71 @@ if [[ ! -d "$stale_dir/active" ]]; then
 else
   fail 'stale recovery releases the worker lock' 'active directory remains'
 fi
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'empty runner recovery worker'
+empty_runner_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+empty_runner_dir="$GLM_AGENT_HOME/workers/$empty_runner_id"
+mkdir "$empty_runner_dir/active"
+cat >"$empty_runner_dir/active/state" <<EOF
+generation=empty-runner-generation
+mode=headless
+turn=2
+supervision=async
+runner_pid=
+runner_start=
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=1
+EOF
+capture "$SCRIPT" status "$empty_runner_id"
+assert_contains 'stale empty runner becomes INVALID' "$OUTPUT" 'STATUS=INVALID'
+if [[ ! -d "$empty_runner_dir/active" ]]; then
+  pass 'stale empty runner lock is recoverable'
+else
+  fail 'stale empty runner lock is recoverable' 'active directory remains'
+fi
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'reused runner recovery worker'
+reused_runner_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+reused_runner_dir="$GLM_AGENT_HOME/workers/$reused_runner_id"
+mkdir "$reused_runner_dir/active"
+cat >"$reused_runner_dir/active/state" <<EOF
+generation=reused-runner-generation
+mode=headless
+turn=2
+supervision=sync
+runner_pid=$$
+runner_start=not-the-current-process-start
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=1
+EOF
+capture "$SCRIPT" status "$reused_runner_id"
+assert_contains 'reused runner PID becomes INVALID' "$OUTPUT" 'STATUS=INVALID'
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'active status authority worker'
+active_status_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+active_status_dir="$GLM_AGENT_HOME/workers/$active_status_id"
+mkdir "$active_status_dir/active"
+cat >"$active_status_dir/active/state" <<EOF
+generation=active-status-generation
+mode=headless
+turn=2
+supervision=sync
+runner_pid=$$
+runner_start=$(process_start_test $$)
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=$(date +%s)
+EOF
+capture "$SCRIPT" status "$active_status_id"
+assert_contains 'live active lock is authoritative RUNNING state' "$OUTPUT" \
+  'STATUS=RUNNING'
+rm -f "$active_status_dir/active/state"
+rmdir "$active_status_dir/active"
 
 capture "$SCRIPT" wait --timeout -1 "$async_worker_id"
 assert_eq 'negative wait timeout is rejected' '2' "$RC"

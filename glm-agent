@@ -294,18 +294,55 @@ meta_get() {
   sed -n "s/^${key}=//p" "$dir/meta" | head -n 1
 }
 
-meta_set() {
-  local dir="$1"
+snapshot_get() {
+  local snapshot="$1"
   local key="$2"
-  local value="$3"
-  local tmp
 
-  validate_single_line "metadata value for $key" "$value"
+  printf '%s\n' "$snapshot" | sed -n "s/^${key}=//p" | head -n 1
+}
+
+meta_update() {
+  local dir="$1"
+  local tmp
+  local line
+  local line_key
+  local skip
+  local i
+  local -a keys
+  local -a values
+
+  shift
+  (($# > 0 && $# % 2 == 0)) || die "meta_update requires key/value pairs"
+  keys=()
+  values=()
+  while (($#)); do
+    validate_single_line "metadata value for $1" "$2"
+    keys+=("$1")
+    values+=("$2")
+    shift 2
+  done
+
   tmp="$(mktemp "$dir/.meta.XXXXXX")"
   chmod 600 "$tmp"
-  grep -v "^${key}=" "$dir/meta" >"$tmp" || true
-  printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_key="${line%%=*}"
+    skip=false
+    for ((i = 0; i < ${#keys[@]}; i++)); do
+      if [[ "$line_key" == "${keys[$i]}" ]]; then
+        skip=true
+        break
+      fi
+    done
+    [[ "$skip" == "true" ]] || printf '%s\n' "$line" >>"$tmp"
+  done <"$dir/meta"
+  for ((i = 0; i < ${#keys[@]}; i++)); do
+    printf '%s=%s\n' "${keys[$i]}" "${values[$i]}" >>"$tmp"
+  done
   mv "$tmp" "$dir/meta"
+}
+
+meta_set() {
+  meta_update "$1" "$2" "$3"
 }
 
 active_get() {
@@ -317,26 +354,59 @@ active_get() {
   sed -n "s/^${key}=//p" "$state_file" | head -n 1
 }
 
-active_set() {
+active_update() {
   local dir="$1"
-  local key="$2"
-  local value="$3"
+  local generation="$2"
   local state_file="$dir/active/state"
   local tmp
+  local line
+  local line_key
+  local skip
+  local i
+  local -a keys
+  local -a values
 
+  shift 2
+  (($# > 0 && $# % 2 == 0)) || die "active_update requires key/value pairs"
   [[ -d "$dir/active" && -f "$state_file" ]] ||
     die "worker has no active lock: $(meta_get "$dir" worker_id)"
-  validate_single_line "active metadata value for $key" "$value"
+  [[ "$(active_get "$dir" generation)" == "$generation" ]] ||
+    die "worker active generation changed: $(meta_get "$dir" worker_id)"
+  keys=()
+  values=()
+  while (($#)); do
+    validate_single_line "active metadata value for $1" "$2"
+    keys+=("$1")
+    values+=("$2")
+    shift 2
+  done
   tmp="$(mktemp "$dir/active/.state.XXXXXX")"
   chmod 600 "$tmp"
-  grep -v "^${key}=" "$state_file" >"$tmp" || true
-  printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_key="${line%%=*}"
+    skip=false
+    for ((i = 0; i < ${#keys[@]}; i++)); do
+      if [[ "$line_key" == "${keys[$i]}" ]]; then
+        skip=true
+        break
+      fi
+    done
+    [[ "$skip" == "true" ]] || printf '%s\n' "$line" >>"$tmp"
+  done <"$state_file"
+  for ((i = 0; i < ${#keys[@]}; i++)); do
+    printf '%s=%s\n' "${keys[$i]}" "${values[$i]}" >>"$tmp"
+  done
   mv "$tmp" "$state_file"
+}
+
+active_set() {
+  active_update "$1" "$2" "$3" "$4"
 }
 
 acquire_worker_lock() {
   local dir="$1"
   local mode="$2"
+  local generation="$3"
   local active_dir="$dir/active"
 
   if ! mkdir "$active_dir" 2>/dev/null; then
@@ -346,11 +416,15 @@ acquire_worker_lock() {
   (
     umask 077
     cat >"$active_dir/state" <<EOF
+generation=$generation
 mode=$mode
 turn=
 supervision=
 runner_pid=
+runner_start=
+provider_pid=
 provider_pgid=
+provider_start=
 started_at=$(date +%s)
 EOF
   )
@@ -358,12 +432,19 @@ EOF
 
 release_worker_lock() {
   local dir="$1"
+  local generation="$2"
   local active_dir="$dir/active"
 
   [[ -d "$active_dir" ]] || return 0
+  [[ "$(active_get "$dir" generation)" == "$generation" ]] || return 0
   rm -f "$active_dir/state" "$active_dir/cancel.requested" \
     "$active_dir/launch.ready"
   rmdir "$active_dir" 2>/dev/null || true
+  rm -f "$dir/cancel.$generation.requested"
+}
+
+new_active_generation() {
+  printf '%s-%s-%s\n' "$(date +%s)" "$$" "${RANDOM:-0}"
 }
 
 process_is_alive() {
@@ -372,10 +453,78 @@ process_is_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
+process_start_identity() {
+  local pid="$1"
+
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  ps -o lstart= -p "$pid" 2>/dev/null | sed \
+    -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+process_matches_start() {
+  local pid="$1"
+  local expected_start="$2"
+  local actual_start
+
+  [[ -n "$expected_start" ]] || return 1
+  actual_start="$(process_start_identity "$pid")"
+  [[ -n "$actual_start" && "$actual_start" == "$expected_start" ]]
+}
+
 process_group_is_alive() {
   local pgid="$1"
   [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || return 1
   kill -0 -- "-$pgid" 2>/dev/null
+}
+
+provider_identity_matches() {
+  local provider_pid="$1"
+  local provider_pgid="$2"
+  local provider_start="$3"
+  local actual_pgid
+  local own_pgid
+
+  [[ "$provider_pid" =~ ^[1-9][0-9]*$ &&
+     "$provider_pgid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$provider_pid" == "$provider_pgid" ]] || return 1
+  process_matches_start "$provider_pid" "$provider_start" || return 1
+  own_pgid="$(ps -o pgid= -p "$$" | tr -d ' ')"
+  [[ "$provider_pgid" != "$own_pgid" ]] || return 1
+  actual_pgid="$(ps -o pgid= -p "$provider_pid" 2>/dev/null | tr -d ' ')"
+  [[ "$actual_pgid" == "$provider_pgid" ]]
+}
+
+signal_provider_identity() {
+  local provider_pid="$1"
+  local provider_pgid="$2"
+  local provider_start="$3"
+  local signal="$4"
+
+  provider_identity_matches "$provider_pid" "$provider_pgid" \
+    "$provider_start" || return 1
+  kill "-$signal" -- "-$provider_pgid" 2>/dev/null
+}
+
+SUPERVISED_PROVIDER_PID=""
+SUPERVISED_PROVIDER_PGID=""
+SUPERVISED_PROVIDER_START=""
+
+forward_provider_and_exit() {
+  local exit_code="$1"
+  local i
+
+  trap - INT TERM HUP EXIT
+  signal_provider_identity "$SUPERVISED_PROVIDER_PID" \
+    "$SUPERVISED_PROVIDER_PGID" "$SUPERVISED_PROVIDER_START" TERM || true
+  for ((i = 0; i < 10; i++)); do
+    process_matches_start "$SUPERVISED_PROVIDER_PID" \
+      "$SUPERVISED_PROVIDER_START" || break
+    sleep 0.1
+  done
+  signal_provider_identity "$SUPERVISED_PROVIDER_PID" \
+    "$SUPERVISED_PROVIDER_PGID" "$SUPERVISED_PROVIDER_START" KILL || true
+  wait "$SUPERVISED_PROVIDER_PID" 2>/dev/null || true
+  exit "$exit_code"
 }
 
 turn_result_path() {
@@ -389,22 +538,39 @@ turn_result_path() {
 
 finalize_interrupted_turn() {
   local dir="$1"
+  local generation="$2"
 
-  meta_set "$dir" status "INVALID"
-  meta_set "$dir" error_kind "interrupted"
-  meta_set "$dir" provider_code ""
-  release_worker_lock "$dir"
+  [[ "$(active_get "$dir" generation)" == "$generation" ]] || return 0
+  meta_update "$dir" status "INVALID" error_kind "interrupted" provider_code ""
+  release_worker_lock "$dir" "$generation"
 }
 
 recover_stale_lock() {
   local dir="$1"
+  local state
+  local generation
   local runner_pid
+  local runner_start
+  local started_at
+  local now
 
   [[ -d "$dir/active" ]] || return 0
-  runner_pid="$(active_get "$dir" runner_pid)"
-  [[ -n "$runner_pid" ]] || return 0
-  if ! process_is_alive "$runner_pid"; then
-    finalize_interrupted_turn "$dir"
+  [[ -f "$dir/active/state" ]] || return 0
+  state="$(cat "$dir/active/state")"
+  generation="$(snapshot_get "$state" generation)"
+  runner_pid="$(snapshot_get "$state" runner_pid)"
+  runner_start="$(snapshot_get "$state" runner_start)"
+  started_at="$(snapshot_get "$state" started_at)"
+  now="$(date +%s)"
+
+  if [[ -z "$runner_pid" || -z "$runner_start" ]]; then
+    if [[ ! "$started_at" =~ ^[0-9]+$ ]] || ((now - started_at >= 5)); then
+      finalize_interrupted_turn "$dir" "$generation"
+    fi
+    return 0
+  fi
+  if ! process_matches_start "$runner_pid" "$runner_start"; then
+    finalize_interrupted_turn "$dir" "$generation"
   fi
 }
 
@@ -424,11 +590,13 @@ print_turn_control() {
   local result_file="$4"
   local error_kind="$5"
   local provider_code="$6"
+  local meta
 
-  printf 'WORKER_ID=%s\n' "$(meta_get "$dir" worker_id)"
+  meta="$(cat "$dir/meta")"
+  printf 'WORKER_ID=%s\n' "$(snapshot_get "$meta" worker_id)"
   printf 'TURN=%s\n' "$turn"
-  printf 'MODEL=%s\n' "$(meta_get "$dir" model)"
-  printf 'ROLE=%s\n' "$(meta_get "$dir" role)"
+  printf 'MODEL=%s\n' "$(snapshot_get "$meta" model)"
+  printf 'ROLE=%s\n' "$(snapshot_get "$meta" role)"
   printf 'STATUS=%s\n' "$status"
   printf 'RESULT=%s\n' "$result_file"
   printf 'ERROR_KIND=%s\n' "$error_kind"
@@ -446,12 +614,45 @@ extract_zai_code() {
   local code=""
 
   code="$(
+    jq -r '
+      if type != "object" then empty
+      elif ((.error? | type) == "object") and (.error.code? != null) then
+        .error.code | tostring
+      elif ((.result? | type) == "string") then
+        try (.result | capture("(?i)code[^0-9]*(?<code>[0-9]{3,4})").code)
+        catch empty
+      else empty
+      end
+    ' "$response_file" 2>/dev/null | head -n 1
+  )" || true
+  if [[ "$code" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$code"
+    return 0
+  fi
+  code="$(
     { cat "$response_file"; cat "$stderr_file"; } 2>/dev/null |
       grep -Eo '"code"[[:space:]]*:[[:space:]]*"?[0-9]+' |
       sed -E 's/[^0-9]*([0-9]+).*/\1/' |
       head -n 1
   )" || true
   printf '%s\n' "$code"
+}
+
+provider_response_is_error() {
+  local response_file="$1"
+
+  jq -e '
+    type == "object" and (
+      .is_error == true
+      or .subtype == "error"
+      or ((.error? | type) == "object")
+      or (
+        ((.result? | type) == "string")
+        and (.result | test("(?i)(error|quota|exhausted|rate.?limit|failed)"))
+        and (.result | test("(?i)(code[^0-9]*[0-9]{3,4}|[0-9]{3,4}[^\\n]*(error|quota|exhausted|rate.?limit|failed))"))
+      )
+    )
+  ' "$response_file" >/dev/null 2>&1
 }
 
 classify_error_kind() {
@@ -477,11 +678,11 @@ invalidate_turn() {
   local error="$4"
   local error_kind="$5"
   local provider_code="$6"
+  local generation="$7"
 
-  meta_set "$dir" status "INVALID"
-  meta_set "$dir" error_kind "$error_kind"
-  meta_set "$dir" provider_code "$provider_code"
-  release_worker_lock "$dir"
+  meta_update "$dir" status "INVALID" error_kind "$error_kind" \
+    provider_code "$provider_code"
+  release_worker_lock "$dir" "$generation"
   print_turn_control "$dir" "$turn" "INVALID" "$result_file" \
     "$error_kind" "$provider_code"
   printf 'ERROR=%s\n' "$error"
@@ -546,16 +747,18 @@ prepare_turn() {
   local turn
   local turn_label
   local turn_dir
+  local generation
 
   dir="$(worker_dir "$worker_id")"
-  acquire_worker_lock "$dir" "$mode"
+  generation="$(new_active_generation)"
+  acquire_worker_lock "$dir" "$mode" "$generation"
   current_turn="$(meta_get "$dir" turn)"
   turn="$((10#$current_turn + 1))"
   printf -v turn_label '%04d' "$turn"
   turn_dir="$dir/turns/$turn_label"
 
   if ! mkdir "$turn_dir"; then
-    release_worker_lock "$dir"
+    release_worker_lock "$dir" "$generation"
     die "turn already exists: $worker_id/$turn_label"
   fi
   chmod 700 "$turn_dir"
@@ -563,17 +766,16 @@ prepare_turn() {
   printf '%s\n' "$prompt" >"$turn_dir/prompt.md"
   chmod 600 "$turn_dir/mode" "$turn_dir/prompt.md"
 
-  active_set "$dir" turn "$turn"
-  meta_set "$dir" turn "$turn"
-  meta_set "$dir" status "RUNNING"
-  meta_set "$dir" error_kind ""
-  meta_set "$dir" provider_code ""
+  active_set "$dir" "$generation" turn "$turn"
+  meta_update "$dir" turn "$turn" status "RUNNING" error_kind "" \
+    provider_code ""
   printf '%s\n' "$turn"
 }
 
 execute_headless_turn() {
   local worker_id="$1"
   local turn="$2"
+  local generation="$3"
   local dir
   local model
   local cwd
@@ -596,6 +798,11 @@ execute_headless_turn() {
   local role_prompt
   local provider_pid
   local provider_pgid
+  local provider_start
+  local cancel_file
+  local provider_ready_file
+  local provider_go_file
+  local provider_ready=false
   local -a args
 
   require_execution_dependencies
@@ -603,7 +810,8 @@ execute_headless_turn() {
   validate_worker_execution "$worker_id"
 
   dir="$(worker_dir "$worker_id")"
-  [[ "$(active_get "$dir" mode)" == "headless" &&
+  [[ "$(active_get "$dir" generation)" == "$generation" &&
+     "$(active_get "$dir" mode)" == "headless" &&
      "$(active_get "$dir" turn)" == "$turn" ]] ||
     die "worker active turn does not match: $worker_id/$turn"
   model="$(meta_get "$dir" model)"
@@ -616,6 +824,9 @@ execute_headless_turn() {
   response_file="$turn_dir/response.json"
   stderr_file="$turn_dir/stderr.log"
   result_file="$turn_dir/result.md"
+  cancel_file="$dir/cancel.$generation.requested"
+  provider_ready_file="$turn_dir/.provider.ready"
+  provider_go_file="$turn_dir/.provider.go"
   validate_single_line "result file path" "$result_file"
 
   system_prompt="$(build_turn_system_prompt "$role" "$result_file")"
@@ -631,53 +842,82 @@ execute_headless_turn() {
     args+=(--resume "$session_id")
   fi
 
-  if [[ -f "$dir/active/cancel.requested" ]]; then
+  if [[ -f "$cancel_file" ]]; then
     : >"$response_file"
     : >"$stderr_file"
     chmod 600 "$response_file" "$stderr_file"
     invalidate_turn "$dir" "$turn" "$result_file" "cancelled" \
-      "interrupted" ""
+      "interrupted" "" "$generation"
     return 1
   fi
 
   set -m
   (
+    : >"$provider_ready_file"
+    for _ in {1..500}; do
+      [[ -f "$provider_go_file" ]] && break
+      sleep 0.01
+    done
+    [[ -f "$provider_go_file" ]] || exit 125
     cd "$cwd"
     GLM_RESULT_FILE="$result_file" run_glm_claude "${args[@]}" "$prompt"
   ) >"$response_file" 2>"$stderr_file" &
   provider_pid=$!
+  for _ in {1..500}; do
+    if [[ -f "$provider_ready_file" ]]; then
+      provider_ready=true
+      break
+    fi
+    sleep 0.01
+  done
   provider_pgid="$(ps -o pgid= -p "$provider_pid" | tr -d ' ')"
-  if [[ ! "$provider_pgid" =~ ^[1-9][0-9]*$ ]]; then
+  provider_start="$(process_start_identity "$provider_pid")"
+  if [[ "$provider_ready" != "true" ]] || \
+    ! provider_identity_matches "$provider_pid" "$provider_pgid" \
+    "$provider_start"; then
     kill "$provider_pid" 2>/dev/null || true
     wait "$provider_pid" 2>/dev/null || true
     set +m
     invalidate_turn "$dir" "$turn" "$result_file" \
-      "provider-process-group-missing" "invocation" ""
+      "provider-process-group-missing" "invocation" "" "$generation"
     return 1
   fi
-  active_set "$dir" provider_pgid "$provider_pgid"
-  if [[ -f "$dir/active/cancel.requested" ]]; then
-    kill -TERM -- "-$provider_pgid" 2>/dev/null || true
+  SUPERVISED_PROVIDER_PID="$provider_pid"
+  SUPERVISED_PROVIDER_PGID="$provider_pgid"
+  SUPERVISED_PROVIDER_START="$provider_start"
+  trap 'forward_provider_and_exit 130' INT
+  trap 'forward_provider_and_exit 143' TERM
+  trap 'forward_provider_and_exit 129' HUP
+  trap 'forward_provider_and_exit $?' EXIT
+  active_update "$dir" "$generation" provider_pid "$provider_pid" \
+    provider_pgid "$provider_pgid" provider_start "$provider_start"
+  : >"$provider_go_file"
+  if [[ -f "$cancel_file" ]]; then
+    signal_provider_identity "$provider_pid" "$provider_pgid" \
+      "$provider_start" TERM || true
   fi
   if wait "$provider_pid"; then
     exit_code=0
   else
     exit_code=$?
   fi
+  trap - INT TERM HUP EXIT
+  SUPERVISED_PROVIDER_PID=""
+  SUPERVISED_PROVIDER_PGID=""
+  SUPERVISED_PROVIDER_START=""
   set +m
+  rm -f "$provider_ready_file" "$provider_go_file"
 
   chmod 600 "$response_file" "$stderr_file"
 
-  if [[ -f "$dir/active/cancel.requested" ]]; then
+  if [[ -f "$cancel_file" ]]; then
     invalidate_turn "$dir" "$turn" "$result_file" "cancelled" \
-      "interrupted" ""
+      "interrupted" "" "$generation"
     return 1
   fi
 
   provider_code="$(extract_zai_code "$response_file" "$stderr_file")"
-  if ((exit_code != 0)) ||
-     jq -e 'type == "object" and .is_error == true' \
-       "$response_file" >/dev/null 2>&1; then
+  if ((exit_code != 0)) || provider_response_is_error "$response_file"; then
     if ((exit_code != 0)); then
       error_label="claude-exit-$exit_code"
       error_kind="$(classify_error_kind "$provider_code" "invocation")"
@@ -686,7 +926,7 @@ execute_headless_turn() {
       error_kind="$(classify_error_kind "$provider_code" "provider-error")"
     fi
     invalidate_turn "$dir" "$turn" "$result_file" "$error_label" \
-      "$error_kind" "$provider_code"
+      "$error_kind" "$provider_code" "$generation"
     return 1
   fi
 
@@ -698,13 +938,13 @@ execute_headless_turn() {
     ' "$response_file" 2>/dev/null
   )"; then
     invalidate_turn "$dir" "$turn" "$result_file" "invalid-response" \
-      "worker-protocol" ""
+      "worker-protocol" "" "$generation"
     return 1
   fi
 
   if [[ -n "$session_id" && "$returned_session_id" != "$session_id" ]]; then
     invalidate_turn "$dir" "$turn" "$result_file" "unexpected-session-id" \
-      "worker-protocol" ""
+      "worker-protocol" "" "$generation"
     return 1
   fi
 
@@ -714,7 +954,7 @@ execute_headless_turn() {
 
   if [[ ! -s "$result_file" ]]; then
     invalidate_turn "$dir" "$turn" "$result_file" "result-file-missing" \
-      "worker-protocol" ""
+      "worker-protocol" "" "$generation"
     return 1
   fi
   chmod 600 "$result_file"
@@ -728,16 +968,14 @@ execute_headless_turn() {
       ;;
     *)
       invalidate_turn "$dir" "$turn" "$result_file" "result-status-invalid" \
-        "worker-protocol" ""
+        "worker-protocol" "" "$generation"
       return 1
       ;;
   esac
 
-  meta_set "$dir" status "$result_status"
-  meta_set "$dir" latest_result "$result_file"
-  meta_set "$dir" error_kind ""
-  meta_set "$dir" provider_code ""
-  release_worker_lock "$dir"
+  meta_update "$dir" status "$result_status" latest_result "$result_file" \
+    error_kind "" provider_code ""
+  release_worker_lock "$dir" "$generation"
   print_turn_control "$dir" "$turn" "$result_status" "$result_file" "" ""
 }
 
@@ -745,14 +983,20 @@ run_turn() {
   local worker_id="$1"
   local prompt="$2"
   local turn
+  local dir
+  local generation
+  local runner_start
 
   require_execution_dependencies
   load_api_key
   validate_worker_execution "$worker_id"
   turn="$(prepare_turn "$worker_id" "$prompt" "headless")"
-  active_set "$(worker_dir "$worker_id")" supervision "sync"
-  active_set "$(worker_dir "$worker_id")" runner_pid "$$"
-  execute_headless_turn "$worker_id" "$turn"
+  dir="$(worker_dir "$worker_id")"
+  generation="$(active_get "$dir" generation)"
+  runner_start="$(process_start_identity "$$")"
+  active_update "$dir" "$generation" supervision "sync" runner_pid "$$" \
+    runner_start "$runner_start"
+  execute_headless_turn "$worker_id" "$turn" "$generation"
 }
 
 launch_async_turn() {
@@ -763,20 +1007,33 @@ launch_async_turn() {
   local turn_dir
   local result_file
   local runner_pid
+  local runner_pgid
+  local runner_start
+  local generation
 
   dir="$(worker_dir "$worker_id")"
   printf -v turn_label '%04d' "$turn"
   turn_dir="$dir/turns/$turn_label"
   result_file="$turn_dir/result.md"
+  generation="$(active_get "$dir" generation)"
 
   set -m
   nohup "$SCRIPT_PATH" _execute-turn "$worker_id" "$turn" \
     </dev/null >"$turn_dir/runner.log" 2>&1 &
   runner_pid=$!
   set +m
+  runner_pgid="$(ps -o pgid= -p "$runner_pid" | tr -d ' ')"
+  runner_start="$(process_start_identity "$runner_pid")"
+  if [[ "$runner_pgid" != "$runner_pid" || -z "$runner_start" ]]; then
+    kill -TERM "$runner_pid" 2>/dev/null || true
+    wait "$runner_pid" 2>/dev/null || true
+    invalidate_turn "$dir" "$turn" "$result_file" \
+      "runner-process-group-missing" "invocation" "" "$generation"
+    return 1
+  fi
   chmod 600 "$turn_dir/runner.log"
-  active_set "$dir" supervision "async"
-  active_set "$dir" runner_pid "$runner_pid"
+  active_update "$dir" "$generation" supervision "async" \
+    runner_pid "$runner_pid" runner_start "$runner_start"
   print_turn_control "$dir" "$turn" "RUNNING" "$result_file" "" ""
   : >"$dir/active/launch.ready"
   chmod 600 "$dir/active/launch.ready"
@@ -804,6 +1061,9 @@ cmd_execute_turn() {
   local turn_label
   local turn_dir
   local ready=false
+  local generation
+  local runner_start
+  local cancel_file
 
   validate_worker_id "$worker_id"
   [[ "$turn" =~ ^[1-9][0-9]*$ ]] || die "invalid turn: $turn"
@@ -812,14 +1072,16 @@ cmd_execute_turn() {
   printf -v turn_label '%04d' "$turn"
   turn_dir="$dir/turns/$turn_label"
   result_file="$turn_dir/result.md"
+  generation="$(active_get "$dir" generation)"
+  cancel_file="$dir/cancel.$generation.requested"
 
   for _ in {1..500}; do
-    if [[ -f "$dir/active/cancel.requested" ]]; then
+    if [[ -f "$cancel_file" ]]; then
       : >"$turn_dir/response.json"
       : >"$turn_dir/stderr.log"
       chmod 600 "$turn_dir/response.json" "$turn_dir/stderr.log"
       invalidate_turn "$dir" "$turn" "$result_file" "cancelled" \
-        "interrupted" ""
+        "interrupted" "" "$generation"
       return 1
     fi
     if [[ -f "$dir/active/launch.ready" ]]; then
@@ -829,15 +1091,18 @@ cmd_execute_turn() {
     sleep 0.01
   done
   if [[ "$ready" != "true" ]]; then
-    finalize_interrupted_turn "$dir"
+    finalize_interrupted_turn "$dir" "$generation"
     die "async launch handshake timed out: $worker_id/$turn"
   fi
   [[ "$(active_get "$dir" runner_pid)" == "$$" ]] ||
     die "async runner identity does not match: $worker_id/$turn"
+  runner_start="$(active_get "$dir" runner_start)"
+  process_matches_start "$$" "$runner_start" ||
+    die "async runner start identity does not match: $worker_id/$turn"
   [[ "$(active_get "$dir" turn)" == "$turn" ]] ||
     die "async runner turn does not match: $worker_id/$turn"
 
-  execute_headless_turn "$worker_id" "$turn"
+  execute_headless_turn "$worker_id" "$turn" "$generation"
 }
 
 print_observed_turn() {
@@ -845,11 +1110,18 @@ print_observed_turn() {
   local status="$2"
   local turn
   local result_file
+  local meta
 
-  turn="$(meta_get "$dir" turn)"
+  meta="$(cat "$dir/meta")"
+  turn="$(snapshot_get "$meta" turn)"
   result_file="$(turn_result_path "$dir" "$turn")"
-  print_turn_control "$dir" "$turn" "$status" "$result_file" \
-    "$(meta_get "$dir" error_kind)" "$(meta_get "$dir" provider_code)"
+  if [[ "$status" == "RUNNING" ]]; then
+    print_turn_control "$dir" "$turn" "$status" "$result_file" "" ""
+  else
+    print_turn_control "$dir" "$turn" "$status" "$result_file" \
+      "$(snapshot_get "$meta" error_kind)" \
+      "$(snapshot_get "$meta" provider_code)"
+  fi
 }
 
 create_worker() {
@@ -891,43 +1163,73 @@ EOF
   printf '%s\n' "$worker_id"
 }
 
-runner_identity_matches() {
+active_generation_matches() {
   local dir="$1"
+  local generation="$2"
+
+  [[ -f "$dir/active/state" ]] || return 1
+  [[ "$(active_get "$dir" generation)" == "$generation" ]]
+}
+
+runner_identity_matches_snapshot() {
+  local dir="$1"
+  local state="$2"
   local runner_pid
+  local runner_start
   local worker_id
   local turn
+  local supervision
   local command_line
 
-  runner_pid="$(active_get "$dir" runner_pid)"
+  runner_pid="$(snapshot_get "$state" runner_pid)"
+  runner_start="$(snapshot_get "$state" runner_start)"
   worker_id="$(meta_get "$dir" worker_id)"
-  turn="$(active_get "$dir" turn)"
-  process_is_alive "$runner_pid" || return 1
+  turn="$(snapshot_get "$state" turn)"
+  supervision="$(snapshot_get "$state" supervision)"
+  process_matches_start "$runner_pid" "$runner_start" || return 1
+  [[ "$supervision" == "async" ]] || return 0
   command_line="$(ps -o command= -p "$runner_pid" 2>/dev/null || true)"
   [[ "$command_line" == *"_execute-turn $worker_id $turn"* ]]
 }
 
-valid_provider_group() {
+provider_identity_matches_snapshot() {
   local dir="$1"
-  local pgid
-  local actual_pgid
-  local own_pgid
+  local state="$2"
+  local provider_pid
+  local provider_pgid
+  local provider_start
+  local worker_id
+  local turn
+  local command_line
 
-  pgid="$(active_get "$dir" provider_pgid)"
-  [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || return 1
-  own_pgid="$(ps -o pgid= -p "$$" | tr -d ' ')"
-  [[ "$pgid" != "$own_pgid" ]] || return 1
-  actual_pgid="$(ps -o pgid= -p "$pgid" 2>/dev/null | tr -d ' ')"
-  [[ "$actual_pgid" == "$pgid" ]]
+  provider_pid="$(snapshot_get "$state" provider_pid)"
+  provider_pgid="$(snapshot_get "$state" provider_pgid)"
+  provider_start="$(snapshot_get "$state" provider_start)"
+  provider_identity_matches "$provider_pid" "$provider_pgid" \
+    "$provider_start" || return 1
+  worker_id="$(meta_get "$dir" worker_id)"
+  turn="$(snapshot_get "$state" turn)"
+  command_line="$(ps -o command= -p "$provider_pid" 2>/dev/null || true)"
+  [[ "$command_line" == *"_execute-turn $worker_id $turn"* ]]
 }
 
-signal_provider_group() {
+signal_provider_snapshot() {
   local dir="$1"
-  local signal="$2"
-  local pgid
+  local state="$2"
+  local signal="$3"
+  local generation
+  local provider_pid
+  local provider_pgid
+  local provider_start
 
-  valid_provider_group "$dir" || return 1
-  pgid="$(active_get "$dir" provider_pgid)"
-  kill "-$signal" -- "-$pgid" 2>/dev/null
+  generation="$(snapshot_get "$state" generation)"
+  active_generation_matches "$dir" "$generation" || return 1
+  provider_identity_matches_snapshot "$dir" "$state" || return 1
+  provider_pid="$(snapshot_get "$state" provider_pid)"
+  provider_pgid="$(snapshot_get "$state" provider_pgid)"
+  provider_start="$(snapshot_get "$state" provider_start)"
+  signal_provider_identity "$provider_pid" "$provider_pgid" \
+    "$provider_start" "$signal"
 }
 
 cmd_api_key() {
@@ -1048,6 +1350,8 @@ run_tui_batch() {
   local result_status
   local provider_code
   local error_kind
+  local generation
+  local runner_start
   local -a args
 
   validate_worker_execution "$worker_id"
@@ -1059,8 +1363,10 @@ run_tui_batch() {
   [[ -n "$session_id" ]] || die "worker has no Claude session: $worker_id"
 
   turn="$(prepare_turn "$worker_id" "Managed Claude Code TUI batch" "tui")"
-  active_set "$dir" supervision "tui"
-  active_set "$dir" runner_pid "$$"
+  generation="$(active_get "$dir" generation)"
+  runner_start="$(process_start_identity "$$")"
+  active_update "$dir" "$generation" supervision "tui" runner_pid "$$" \
+    runner_start "$runner_start"
   printf -v turn_label '%04d' "$turn"
   turn_dir="$dir/turns/$turn_label"
   result_file="$turn_dir/result.md"
@@ -1100,12 +1406,12 @@ EOF
     provider_code="$(extract_zai_code /dev/null "$stderr_file")"
     error_kind="$(classify_error_kind "$provider_code" "invocation")"
     invalidate_turn "$dir" "$turn" "$result_file" "claude-exit-$exit_code" \
-      "$error_kind" "$provider_code"
+      "$error_kind" "$provider_code" "$generation"
     return 1
   fi
   if [[ ! -s "$result_file" ]]; then
     invalidate_turn "$dir" "$turn" "$result_file" "result-file-missing" \
-      "worker-protocol" ""
+      "worker-protocol" "" "$generation"
     return 1
   fi
   chmod 600 "$result_file"
@@ -1114,16 +1420,14 @@ EOF
     'STATUS: BLOCKED') result_status="BLOCKED" ;;
     *)
       invalidate_turn "$dir" "$turn" "$result_file" \
-        "result-status-invalid" "worker-protocol" ""
+        "result-status-invalid" "worker-protocol" "" "$generation"
       return 1
       ;;
   esac
 
-  meta_set "$dir" status "$result_status"
-  meta_set "$dir" latest_result "$result_file"
-  meta_set "$dir" error_kind ""
-  meta_set "$dir" provider_code ""
-  release_worker_lock "$dir"
+  meta_update "$dir" status "$result_status" latest_result "$result_file" \
+    error_kind "" provider_code ""
+  release_worker_lock "$dir" "$generation"
   print_turn_control "$dir" "$turn" "$result_status" "$result_file" "" ""
 }
 
@@ -1249,13 +1553,19 @@ cmd_wait() {
   local dir
   local status
   local deadline
+  local meta
   require_worker "$worker_id"
   dir="$(worker_dir "$worker_id")"
   deadline="$(( $(date +%s) + 10#$timeout ))"
 
   while :; do
     recover_stale_lock "$dir"
-    status="$(meta_get "$dir" status)"
+    meta="$(cat "$dir/meta")"
+    if [[ -d "$dir/active" ]]; then
+      status="RUNNING"
+    else
+      status="$(snapshot_get "$meta" status)"
+    fi
     case "$status" in
       DONE|BLOCKED|INVALID)
         print_observed_turn "$dir" "$status"
@@ -1279,6 +1589,10 @@ cmd_cancel() {
   local dir
   local status
   local runner_pid
+  local runner_start
+  local state
+  local generation
+  local marker
   require_worker "$worker_id"
   dir="$(worker_dir "$worker_id")"
   recover_stale_lock "$dir"
@@ -1295,39 +1609,59 @@ cmd_cancel() {
     esac
   fi
 
-  [[ "$(active_get "$dir" mode)" == "headless" &&
-     "$(active_get "$dir" supervision)" == "async" ]] ||
+  state="$(cat "$dir/active/state")"
+  generation="$(snapshot_get "$state" generation)"
+  [[ "$(snapshot_get "$state" mode)" == "headless" &&
+     "$(snapshot_get "$state" supervision)" == "async" ]] ||
     die "worker is not running an asynchronous headless turn: $worker_id"
-  runner_identity_matches "$dir" ||
+  runner_identity_matches_snapshot "$dir" "$state" ||
     die "active runner identity is invalid: $worker_id"
 
-  : >"$dir/active/cancel.requested"
-  chmod 600 "$dir/active/cancel.requested"
-  signal_provider_group "$dir" TERM || true
+  marker="$dir/cancel.$generation.requested"
+  : >"$marker"
+  chmod 600 "$marker"
+  if active_generation_matches "$dir" "$generation"; then
+    signal_provider_snapshot "$dir" "$state" TERM || true
+  fi
 
   for _ in {1..50}; do
-    [[ ! -d "$dir/active" ]] && break
+    active_generation_matches "$dir" "$generation" || break
+    if ! runner_identity_matches_snapshot "$dir" "$state"; then
+      finalize_interrupted_turn "$dir" "$generation"
+      break
+    fi
     sleep 0.1
   done
 
-  if [[ -d "$dir/active" ]]; then
-    runner_pid="$(active_get "$dir" runner_pid)"
-    if runner_identity_matches "$dir"; then
+  if active_generation_matches "$dir" "$generation"; then
+    runner_pid="$(snapshot_get "$state" runner_pid)"
+    runner_start="$(snapshot_get "$state" runner_start)"
+    if runner_identity_matches_snapshot "$dir" "$state"; then
       kill -TERM "$runner_pid" 2>/dev/null || true
     fi
     for _ in {1..10}; do
-      [[ ! -d "$dir/active" ]] && break
+      active_generation_matches "$dir" "$generation" || break
+      process_matches_start "$runner_pid" "$runner_start" || break
       sleep 0.1
     done
   fi
 
-  if [[ -d "$dir/active" ]]; then
-    signal_provider_group "$dir" KILL || true
-    runner_pid="$(active_get "$dir" runner_pid)"
-    if runner_identity_matches "$dir"; then
+  if active_generation_matches "$dir" "$generation"; then
+    state="$(cat "$dir/active/state")"
+    signal_provider_snapshot "$dir" "$state" KILL || true
+    runner_pid="$(snapshot_get "$state" runner_pid)"
+    runner_start="$(snapshot_get "$state" runner_start)"
+    if runner_identity_matches_snapshot "$dir" "$state"; then
       kill -KILL "$runner_pid" 2>/dev/null || true
     fi
-    finalize_interrupted_turn "$dir"
+    for _ in {1..10}; do
+      process_matches_start "$runner_pid" "$runner_start" || break
+      sleep 0.1
+    done
+    if process_matches_start "$runner_pid" "$runner_start"; then
+      die "failed to stop active runner: $worker_id"
+    fi
+    finalize_interrupted_turn "$dir" "$generation"
   fi
 
   status="$(meta_get "$dir" status)"
@@ -1354,27 +1688,49 @@ cmd_status() {
 
   local worker_id="$1"
   local dir
+  local meta
+  local active=""
+  local status
+  local active_turn
+  local active_mode
+  local error_kind
+  local provider_code
   require_worker "$worker_id"
   dir="$(worker_dir "$worker_id")"
   recover_stale_lock "$dir"
+  meta="$(cat "$dir/meta")"
+  if [[ -f "$dir/active/state" ]]; then
+    active="$(cat "$dir/active/state")"
+    status="RUNNING"
+    active_mode="$(snapshot_get "$active" mode)"
+    active_turn="$(snapshot_get "$active" turn)"
+    error_kind=""
+    provider_code=""
+  else
+    status="$(snapshot_get "$meta" status)"
+    active_mode=""
+    active_turn=""
+    error_kind="$(snapshot_get "$meta" error_kind)"
+    provider_code="$(snapshot_get "$meta" provider_code)"
+  fi
 
   printf 'WORKER_ID=%s\n' "$worker_id"
-  printf 'STATUS=%s\n' "$(meta_get "$dir" status)"
-  printf 'TURN=%s\n' "$(meta_get "$dir" turn)"
-  printf 'MODEL=%s\n' "$(meta_get "$dir" model)"
-  printf 'ROLE=%s\n' "$(meta_get "$dir" role)"
-  printf 'CWD=%s\n' "$(meta_get "$dir" cwd)"
-  printf 'CLOSED=%s\n' "$(meta_get "$dir" closed)"
-  printf 'RESULT=%s\n' "$(meta_get "$dir" latest_result)"
-  printf 'ERROR_KIND=%s\n' "$(meta_get "$dir" error_kind)"
-  printf 'PROVIDER_CODE=%s\n' "$(meta_get "$dir" provider_code)"
-  if [[ "$(meta_get "$dir" error_kind)" == "quota-exhausted" ]]; then
+  printf 'STATUS=%s\n' "$status"
+  printf 'TURN=%s\n' "$(snapshot_get "$meta" turn)"
+  printf 'MODEL=%s\n' "$(snapshot_get "$meta" model)"
+  printf 'ROLE=%s\n' "$(snapshot_get "$meta" role)"
+  printf 'CWD=%s\n' "$(snapshot_get "$meta" cwd)"
+  printf 'CLOSED=%s\n' "$(snapshot_get "$meta" closed)"
+  printf 'RESULT=%s\n' "$(snapshot_get "$meta" latest_result)"
+  printf 'ERROR_KIND=%s\n' "$error_kind"
+  printf 'PROVIDER_CODE=%s\n' "$provider_code"
+  if [[ "$error_kind" == "quota-exhausted" ]]; then
     printf '%s\n' 'FALLBACK_RECOMMENDED=true'
   else
     printf '%s\n' 'FALLBACK_RECOMMENDED=false'
   fi
-  printf 'ACTIVE_MODE=%s\n' "$(active_get "$dir" mode)"
-  printf 'ACTIVE_TURN=%s\n' "$(active_get "$dir" turn)"
+  printf 'ACTIVE_MODE=%s\n' "$active_mode"
+  printf 'ACTIVE_TURN=%s\n' "$active_turn"
 }
 
 cmd_list() {

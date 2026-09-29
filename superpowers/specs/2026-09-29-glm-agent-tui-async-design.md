@@ -198,10 +198,12 @@ independent lifetime.
 ## 7. Worker concurrency and ownership
 
 One worker may have at most one active headless turn or TUI attachment. An
-atomic directory lock under the worker directory records active mode, turn,
-runner PID, provider process-group ID, and start time. `mkdir` provides the
-portable exclusion primitive for macOS Bash 3.2. A cancellation-request marker
-under the lock closes the race between turn launch and provider-group startup.
+atomic directory lock under the worker directory records an immutable
+generation, active mode and turn, runner PID and start identity, provider PID,
+process-group ID and start identity, and lock start time. `mkdir` provides the
+portable exclusion primitive for macOS Bash 3.2. A generation-specific
+cancellation-request marker closes the race between turn launch and
+provider-group startup without applying to a replacement turn.
 
 - `send`, `send --async`, and `tui <worker-id>` reject a live lock.
 - `close` rejects a live lock and preserves all files.
@@ -212,6 +214,9 @@ under the lock closes the race between turn launch and provider-group startup.
 - A lock whose recorded process is gone is finalized as `STATUS=INVALID` with
   `ERROR_KIND=interrupted`; its artifacts remain and the worker becomes
   available for a later turn.
+- PID liveness alone is insufficient: recovery compares the recorded process
+  start identity, and a launch with no runner identity becomes recoverable
+  after a short initialization grace period.
 
 The CLI, rather than the bridge custom agent, owns process detachment. After
 preparing the turn, `start --async` and `send --async` launch an internal
@@ -246,18 +251,25 @@ Claude. This is supported by the project's macOS Bash 3.2 baseline and lets
 process group, rather than only the outer wrapper PID. A tool that deliberately
 creates its own detached session is outside this process-group contract and is
 why the result prompt does not treat background-process startup as completion.
+The provider uses a short ready/go handshake so even an immediately exiting
+Claude process has its PID, PGID, and start identity recorded before execution.
+Synchronous wrappers forward `INT`, `TERM`, `HUP`, and unexpected exit to that
+verified provider group so child processes do not become orphaned.
 
 Cancellation follows this order:
 
-1. Validate that the lock still belongs to the requested worker and turn, then
-   create the cancellation-request marker atomically.
-2. If a provider PGID is recorded and still belongs to that active turn, send
+1. Capture and validate one active-generation snapshot, then create its
+   generation-specific cancellation marker.
+2. Revalidate the active generation plus runner/provider process start,
+   command ownership, and PGID immediately before each signal. Signal targets
+   come from the captured snapshot rather than a potentially replacement lock.
+3. If a provider PGID is recorded and still belongs to that active turn, send
    `TERM` to the negative PGID so every member receives it.
-3. If provider startup is still in progress, the runner observes the marker
+4. If provider startup is still in progress, the runner observes the marker
    before or immediately after launch and skips or terminates the provider.
-4. Wait a short grace period for the runner to preserve partial artifacts,
+5. Wait a short grace period for the runner to preserve partial artifacts,
    classify the turn as interrupted, and release the lock.
-5. Send `KILL` to a still-live provider group and runner only after revalidating
+6. Send `KILL` to a still-live provider group and runner only after revalidating
    their recorded identities, then finalize interrupted state if the runner
    could not do so.
 
@@ -294,6 +306,11 @@ launch_async_turn(worker, turn)
 The synchronous path calls preparation and execution in the foreground. The
 asynchronous path calls the same preparation function, launches exactly the
 same executor, and returns the receipt.
+
+Each lifecycle transition rewrites all affected worker metadata fields in one
+atomic replacement. `status` and `wait` read one metadata snapshot, while a
+live active-generation record is authoritative `RUNNING` until terminal
+metadata is fully published and the lock is released.
 
 ## 9. TUI lifecycle and durable interactive batches
 
