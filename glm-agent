@@ -259,6 +259,62 @@ meta_set() {
   mv "$tmp" "$dir/meta"
 }
 
+active_get() {
+  local dir="$1"
+  local key="$2"
+  local state_file="$dir/active/state"
+
+  [[ -f "$state_file" ]] || return 0
+  sed -n "s/^${key}=//p" "$state_file" | head -n 1
+}
+
+active_set() {
+  local dir="$1"
+  local key="$2"
+  local value="$3"
+  local state_file="$dir/active/state"
+  local tmp
+
+  [[ -d "$dir/active" && -f "$state_file" ]] ||
+    die "worker has no active lock: $(meta_get "$dir" worker_id)"
+  validate_single_line "active metadata value for $key" "$value"
+  tmp="$(mktemp "$dir/active/.state.XXXXXX")"
+  chmod 600 "$tmp"
+  grep -v "^${key}=" "$state_file" >"$tmp" || true
+  printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  mv "$tmp" "$state_file"
+}
+
+acquire_worker_lock() {
+  local dir="$1"
+  local mode="$2"
+  local active_dir="$dir/active"
+
+  if ! mkdir "$active_dir" 2>/dev/null; then
+    die "worker is active: $(meta_get "$dir" worker_id)"
+  fi
+  chmod 700 "$active_dir"
+  (
+    umask 077
+    cat >"$active_dir/state" <<EOF
+mode=$mode
+turn=
+runner_pid=
+provider_pgid=
+started_at=$(date +%s)
+EOF
+  )
+}
+
+release_worker_lock() {
+  local dir="$1"
+  local active_dir="$dir/active"
+
+  [[ -d "$active_dir" ]] || return 0
+  rm -f "$active_dir/state" "$active_dir/cancel.requested"
+  rmdir "$active_dir" 2>/dev/null || true
+}
+
 require_worker() {
   local worker_id="$1"
   local dir
@@ -332,48 +388,28 @@ invalidate_turn() {
   meta_set "$dir" status "INVALID"
   meta_set "$dir" error_kind "$error_kind"
   meta_set "$dir" provider_code "$provider_code"
+  release_worker_lock "$dir"
   print_turn_control "$dir" "$turn" "INVALID" "$result_file" \
     "$error_kind" "$provider_code"
   printf 'ERROR=%s\n' "$error"
   return 1
 }
 
-run_turn() {
+validate_worker_execution() {
   local worker_id="$1"
-  local prompt="$2"
   local dir
   local model
   local cwd
   local current_turn
-  local turn
-  local turn_label
-  local session_id
-  local turn_dir
-  local prompt_file
-  local response_file
-  local stderr_file
-  local result_file
-  local exit_code=0
-  local returned_session_id
-  local result_status
-  local provider_code
-  local error_kind
-  local system_prompt
   local role
   local role_prompt_path
-  local role_prompt
-  local -a args
 
-  require_execution_dependencies
-  load_api_key
   require_worker "$worker_id"
-
   dir="$(worker_dir "$worker_id")"
   model="$(meta_get "$dir" model)"
   role="$(meta_get "$dir" role)"
   cwd="$(meta_get "$dir" cwd)"
   current_turn="$(meta_get "$dir" turn)"
-  session_id="$(meta_get "$dir" claude_session_id)"
 
   [[ -n "$model" ]] || die "worker has no model: $worker_id"
   validate_role "$role"
@@ -385,27 +421,91 @@ run_turn() {
   role_prompt_path="$(role_prompt_file "$role")"
   [[ -r "$role_prompt_path" && -s "$role_prompt_path" ]] ||
     die "role prompt file is missing, unreadable, or empty: $role_prompt_path"
-  system_prompt="$(<"$SYSTEM_PROMPT_FILE")"
-  role_prompt="$(<"$role_prompt_path")"
-  system_prompt+=$'\n\n<worker_role>\n'
-  system_prompt+="$role_prompt"
-  system_prompt+=$'\n</worker_role>'
+}
 
+prepare_turn() {
+  local worker_id="$1"
+  local prompt="$2"
+  local mode="$3"
+  local dir
+  local current_turn
+  local turn
+  local turn_label
+  local turn_dir
+
+  dir="$(worker_dir "$worker_id")"
+  acquire_worker_lock "$dir" "$mode"
+  current_turn="$(meta_get "$dir" turn)"
   turn="$((10#$current_turn + 1))"
   printf -v turn_label '%04d' "$turn"
   turn_dir="$dir/turns/$turn_label"
-  prompt_file="$turn_dir/prompt.md"
+
+  if ! mkdir "$turn_dir"; then
+    release_worker_lock "$dir"
+    die "turn already exists: $worker_id/$turn_label"
+  fi
+  chmod 700 "$turn_dir"
+  printf '%s\n' "$mode" >"$turn_dir/mode"
+  printf '%s\n' "$prompt" >"$turn_dir/prompt.md"
+  chmod 600 "$turn_dir/mode" "$turn_dir/prompt.md"
+
+  active_set "$dir" turn "$turn"
+  meta_set "$dir" turn "$turn"
+  meta_set "$dir" status "RUNNING"
+  printf '%s\n' "$turn"
+}
+
+execute_headless_turn() {
+  local worker_id="$1"
+  local turn="$2"
+  local dir
+  local model
+  local cwd
+  local session_id
+  local turn_label
+  local turn_dir
+  local prompt
+  local response_file
+  local stderr_file
+  local result_file
+  local exit_code=0
+  local returned_session_id
+  local result_status
+  local provider_code
+  local error_kind
+  local error_label
+  local system_prompt
+  local role
+  local role_prompt_path
+  local role_prompt
+  local -a args
+
+  require_execution_dependencies
+  load_api_key
+  validate_worker_execution "$worker_id"
+
+  dir="$(worker_dir "$worker_id")"
+  [[ "$(active_get "$dir" mode)" == "headless" &&
+     "$(active_get "$dir" turn)" == "$turn" ]] ||
+    die "worker active turn does not match: $worker_id/$turn"
+  model="$(meta_get "$dir" model)"
+  role="$(meta_get "$dir" role)"
+  cwd="$(meta_get "$dir" cwd)"
+  session_id="$(meta_get "$dir" claude_session_id)"
+  printf -v turn_label '%04d' "$turn"
+  turn_dir="$dir/turns/$turn_label"
+  prompt="$(<"$turn_dir/prompt.md")"
   response_file="$turn_dir/response.json"
   stderr_file="$turn_dir/stderr.log"
   result_file="$turn_dir/result.md"
   validate_single_line "result file path" "$result_file"
 
-  mkdir "$turn_dir" || die "turn already exists: $worker_id/$turn_label"
-  printf '%s\n' "$prompt" >"$prompt_file"
-  chmod 600 "$prompt_file"
-
-  meta_set "$dir" turn "$turn"
-  meta_set "$dir" status "RUNNING"
+  role_prompt_path="$(role_prompt_file "$role")"
+  system_prompt="$(<"$SYSTEM_PROMPT_FILE")"
+  role_prompt="$(<"$role_prompt_path")"
+  system_prompt+=$'\n\n<worker_role>\n'
+  system_prompt+="$role_prompt"
+  system_prompt+=$'\n</worker_role>'
 
   system_prompt+=$'\n\n<current_turn_result_file>\n'
   system_prompt+="For this turn, GLM_RESULT_FILE is exactly this absolute path:"
@@ -432,10 +532,18 @@ run_turn() {
 
   chmod 600 "$response_file" "$stderr_file"
 
-  if ((exit_code != 0)); then
-    provider_code="$(extract_zai_code "$response_file" "$stderr_file")"
-    error_kind="$(classify_error_kind "$provider_code" "invocation")"
-    invalidate_turn "$dir" "$turn" "$result_file" "claude-exit-$exit_code" \
+  provider_code="$(extract_zai_code "$response_file" "$stderr_file")"
+  if ((exit_code != 0)) ||
+     jq -e 'type == "object" and .is_error == true' \
+       "$response_file" >/dev/null 2>&1; then
+    if ((exit_code != 0)); then
+      error_label="claude-exit-$exit_code"
+      error_kind="$(classify_error_kind "$provider_code" "invocation")"
+    else
+      error_label="claude-error-response"
+      error_kind="$(classify_error_kind "$provider_code" "provider-error")"
+    fi
+    invalidate_turn "$dir" "$turn" "$result_file" "$error_label" \
       "$error_kind" "$provider_code"
     return 1
   fi
@@ -487,7 +595,20 @@ run_turn() {
   meta_set "$dir" latest_result "$result_file"
   meta_set "$dir" error_kind ""
   meta_set "$dir" provider_code ""
+  release_worker_lock "$dir"
   print_turn_control "$dir" "$turn" "$result_status" "$result_file" "" ""
+}
+
+run_turn() {
+  local worker_id="$1"
+  local prompt="$2"
+  local turn
+
+  require_execution_dependencies
+  load_api_key
+  validate_worker_execution "$worker_id"
+  turn="$(prepare_turn "$worker_id" "$prompt" "headless")"
+  execute_headless_turn "$worker_id" "$turn"
 }
 
 cmd_api_key() {

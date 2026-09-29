@@ -107,6 +107,12 @@ if [[ -z "${GLM_RESULT_FILE:-}" ]]; then
   exit 0
 fi
 
+if [[ "$prompt" == *EXIT_ZERO_ZAI_ERROR* ]]; then
+  printf '%s\n' \
+    '{"type":"result","subtype":"error","is_error":true,"session_id":"session-1","error":{"code":1113,"message":"quota exhausted"}}'
+  exit 0
+fi
+
 if [[ "$prompt" =~ ZAI_ERROR_([0-9]+) ]]; then
   zai_code="${BASH_REMATCH[1]}"
   printf '{"error":{"code":"%s","message":"simulated provider error"}}\n' \
@@ -117,6 +123,18 @@ fi
 if [[ "$prompt" == *CLAUDE_FAIL* ]]; then
   printf '%s\n' 'simulated claude failure' >&2
   exit 17
+fi
+
+if [[ "$prompt" == *WAIT_FOR_RELEASE* ]]; then
+  : >"$FAKE_CLAUDE_BLOCK_STARTED"
+  for _ in {1..500}; do
+    [[ -f "$FAKE_CLAUDE_BLOCK_RELEASE" ]] && break
+    sleep 0.01
+  done
+  [[ -f "$FAKE_CLAUDE_BLOCK_RELEASE" ]] || {
+    printf '%s\n' 'timed out waiting for test release' >&2
+    exit 18
+  }
 fi
 
 case "$prompt" in
@@ -371,6 +389,45 @@ capture "$SCRIPT" list
 assert_eq 'list succeeds' '0' "$RC"
 assert_contains 'list includes worker and state' "$OUTPUT" "$worker_id"
 assert_contains 'list includes latest status' "$OUTPUT" 'BLOCKED'
+
+capture "$SCRIPT" send "$worker_id" 'EXIT_ZERO_ZAI_ERROR'
+assert_eq 'exit-zero provider error fails the turn' '1' "$RC"
+assert_contains 'exit-zero quota error is classified' "$OUTPUT" \
+  'ERROR_KIND=quota-exhausted'
+assert_contains 'exit-zero quota code is retained' "$OUTPUT" \
+  'PROVIDER_CODE=1113'
+assert_contains 'exit-zero quota error recommends fallback' "$OUTPUT" \
+  'FALLBACK_RECOMMENDED=true'
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'lock test worker'
+assert_eq 'lock test worker starts' '0' "$RC"
+lock_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+export FAKE_CLAUDE_BLOCK_STARTED="$TEST_ROOT/block.started"
+export FAKE_CLAUDE_BLOCK_RELEASE="$TEST_ROOT/block.release"
+"$SCRIPT" send "$lock_worker_id" 'WAIT_FOR_RELEASE' \
+  >"$TEST_ROOT/blocking-send.out" 2>"$TEST_ROOT/blocking-send.err" &
+blocking_send_pid=$!
+for _ in {1..500}; do
+  [[ -f "$FAKE_CLAUDE_BLOCK_STARTED" ]] && break
+  sleep 0.01
+done
+if [[ -f "$FAKE_CLAUDE_BLOCK_STARTED" ]]; then
+  pass 'first overlapping send reaches the provider'
+else
+  fail 'first overlapping send reaches the provider' 'provider did not start'
+fi
+capture "$SCRIPT" send "$lock_worker_id" 'overlapping send must be rejected'
+assert_eq 'overlapping send is a CLI state error' '2' "$RC"
+assert_contains 'overlapping send reports active worker' "$STDERR" \
+  'worker is active'
+: >"$FAKE_CLAUDE_BLOCK_RELEASE"
+if wait "$blocking_send_pid"; then
+  pass 'first overlapping send completes after release'
+else
+  fail 'first overlapping send completes after release' \
+    "$(cat "$TEST_ROOT/blocking-send.err")"
+fi
+unset FAKE_CLAUDE_BLOCK_STARTED FAKE_CLAUDE_BLOCK_RELEASE
 
 for code in 1113 1308 1310 1316 1317 1318 1319 1320 1321; do
   capture "$SCRIPT" send "$worker_id" "ZAI_ERROR_$code"

@@ -20,3 +20,8 @@
 - Task 1-5 → Task 6: 실제 command/control fields를 help·README·version gate가 문서화한다.
 - Task 6 → Task 7: 검증된 0.4.0 commit을 review·push·installed plugin update가 소비한다.
 
+## 진행
+
+- Task 1: Ruling: `acquire_worker_lock DIR MODE TURN` 대신 `acquire_worker_lock DIR MODE`로 lock을 먼저 얻고 그 안에서 다음 turn을 계산·기록한다 — lock 전에 turn을 계산하면 두 호출이 같은 번호를 볼 수 있다 — 잘못되면 내부 호출부가 세 번째 인자를 기대하는 불일치가 생기지만 public interface 영향은 없다.
+- Task 1: RED — `bash tests/test_glm_agent.sh` → 229개 중 5개 실패: exit-zero quota 응답 3개가 `worker-protocol`, 겹친 send 2개가 성공/무오류.
+- Task 1: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 229/229 pass.
