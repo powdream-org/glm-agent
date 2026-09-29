@@ -429,6 +429,115 @@ else
 fi
 unset FAKE_CLAUDE_BLOCK_STARTED FAKE_CLAUDE_BLOCK_RELEASE
 
+async_started="$TEST_ROOT/async.started"
+async_release="$TEST_ROOT/async.release"
+async_receipt="$TEST_ROOT/async.receipt"
+export FAKE_CLAUDE_BLOCK_STARTED="$async_started"
+export FAKE_CLAUDE_BLOCK_RELEASE="$async_release"
+if (
+  "$SCRIPT" start --async --role explorer --model haiku --cwd "$PROJECT" \
+    'WAIT_FOR_RELEASE async parent exit'
+) >"$async_receipt" 2>"$TEST_ROOT/async-start.err"; then
+  async_start_rc=0
+else
+  async_start_rc=$?
+fi
+assert_eq 'async start parent shell exits successfully' '0' "$async_start_rc"
+async_output="$(cat "$async_receipt")"
+async_worker_id="$(printf '%s\n' "$async_output" | sed -n 's/^WORKER_ID=//p')"
+assert_contains 'async start returns a RUNNING receipt' "$async_output" \
+  $'TURN=1\nMODEL=haiku\nROLE=explorer\nSTATUS=RUNNING\nRESULT='
+for _ in {1..500}; do
+  [[ -f "$async_started" ]] && break
+  sleep 0.01
+done
+if [[ -f "$async_started" ]]; then
+  pass 'detached runner survives its launching shell'
+else
+  fail 'detached runner survives its launching shell' \
+    "$(cat "$TEST_ROOT/async-start.err")"
+fi
+
+capture "$SCRIPT" status "$async_worker_id"
+assert_eq 'status observes an async worker' '0' "$RC"
+assert_contains 'status reports active headless mode' "$OUTPUT" \
+  'ACTIVE_MODE=headless'
+assert_contains 'status reports active turn' "$OUTPUT" 'ACTIVE_TURN=1'
+
+capture "$SCRIPT" wait --timeout 0 "$async_worker_id"
+assert_eq 'zero-timeout wait is a successful observation' '0' "$RC"
+assert_contains 'zero-timeout wait reports RUNNING' "$OUTPUT" 'STATUS=RUNNING'
+assert_contains 'zero-timeout wait distinguishes timeout' "$OUTPUT" \
+  'WAIT_RESULT=TIMEOUT'
+
+capture "$SCRIPT" close "$async_worker_id"
+assert_eq 'close rejects an active async worker' '2' "$RC"
+assert_contains 'active close error is clear' "$STDERR" 'worker is active'
+
+: >"$async_release"
+capture "$SCRIPT" wait --timeout 5 "$async_worker_id"
+assert_eq 'wait returns after async completion' '0' "$RC"
+assert_contains 'terminal wait reports DONE' "$OUTPUT" 'STATUS=DONE'
+assert_contains 'terminal wait identifies terminal state' "$OUTPUT" \
+  'WAIT_RESULT=TERMINAL'
+async_result="$(printf '%s\n' "$OUTPUT" | sed -n 's/^RESULT=//p')"
+assert_file 'async turn creates its durable result' "$async_result"
+assert_file 'async turn keeps a detached runner log' \
+  "$GLM_AGENT_HOME/workers/$async_worker_id/turns/0001/runner.log"
+
+rm -f "$async_started" "$async_release"
+capture "$SCRIPT" send --async "$async_worker_id" \
+  'WAIT_FOR_RELEASE async resume'
+assert_eq 'async send returns successfully' '0' "$RC"
+assert_contains 'async send returns turn two receipt' "$OUTPUT" \
+  $'TURN=2\nMODEL=haiku\nROLE=explorer\nSTATUS=RUNNING\nRESULT='
+for _ in {1..500}; do
+  [[ -f "$async_started" ]] && break
+  sleep 0.01
+done
+: >"$async_release"
+capture "$SCRIPT" wait --timeout 5 "$async_worker_id"
+assert_eq 'async resumed turn reaches terminal state' '0' "$RC"
+assert_contains 'async resumed turn completes' "$OUTPUT" 'STATUS=DONE'
+async_log="$(cat "$FAKE_LOG")"
+assert_contains 'async send resumes the stored session' "$async_log" \
+  'resume=session-1'
+assert_contains 'async send uses the stored cwd' "$async_log" "cwd=$PROJECT"
+unset FAKE_CLAUDE_BLOCK_STARTED FAKE_CLAUDE_BLOCK_RELEASE
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'stale lock recovery worker'
+assert_eq 'stale lock worker starts' '0' "$RC"
+stale_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+stale_dir="$GLM_AGENT_HOME/workers/$stale_worker_id"
+mkdir "$stale_dir/active"
+cat >"$stale_dir/active/state" <<EOF
+mode=headless
+turn=2
+runner_pid=99999999
+provider_pgid=
+started_at=1
+EOF
+sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
+  "$stale_dir/meta" >"$stale_dir/meta.next"
+mv "$stale_dir/meta.next" "$stale_dir/meta"
+capture "$SCRIPT" status "$stale_worker_id"
+assert_eq 'status recovers a stale runner' '0' "$RC"
+assert_contains 'stale runner becomes INVALID' "$OUTPUT" 'STATUS=INVALID'
+assert_contains 'stale runner is classified interrupted' "$OUTPUT" \
+  'ERROR_KIND=interrupted'
+if [[ ! -d "$stale_dir/active" ]]; then
+  pass 'stale recovery releases the worker lock'
+else
+  fail 'stale recovery releases the worker lock' 'active directory remains'
+fi
+
+capture "$SCRIPT" wait --timeout -1 "$async_worker_id"
+assert_eq 'negative wait timeout is rejected' '2' "$RC"
+capture "$SCRIPT" wait --timeout 301 "$async_worker_id"
+assert_eq 'wait timeout above maximum is rejected' '2' "$RC"
+capture "$SCRIPT" wait --timeout nope "$async_worker_id"
+assert_eq 'non-numeric wait timeout is rejected' '2' "$RC"
+
 for code in 1113 1308 1310 1316 1317 1318 1319 1320 1321; do
   capture "$SCRIPT" send "$worker_id" "ZAI_ERROR_$code"
   assert_eq "quota code $code fails the turn" '1' "$RC"

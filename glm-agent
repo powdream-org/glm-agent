@@ -4,6 +4,7 @@ set -Eeuo pipefail
 PROGRAM="${0##*/}"
 VERSION="0.3.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_PATH="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
 ROLE_PROMPTS_DIR="${GLM_ROLE_PROMPTS_DIR:-$SCRIPT_DIR/prompts}"
 DEFAULT_ROLE="${GLM_ROLE:-general-purpose}"
@@ -311,8 +312,45 @@ release_worker_lock() {
   local active_dir="$dir/active"
 
   [[ -d "$active_dir" ]] || return 0
-  rm -f "$active_dir/state" "$active_dir/cancel.requested"
+  rm -f "$active_dir/state" "$active_dir/cancel.requested" \
+    "$active_dir/launch.ready"
   rmdir "$active_dir" 2>/dev/null || true
+}
+
+process_is_alive() {
+  local pid="$1"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+turn_result_path() {
+  local dir="$1"
+  local turn="$2"
+  local turn_label
+
+  printf -v turn_label '%04d' "$turn"
+  printf '%s/turns/%s/result.md\n' "$dir" "$turn_label"
+}
+
+finalize_interrupted_turn() {
+  local dir="$1"
+
+  meta_set "$dir" status "INVALID"
+  meta_set "$dir" error_kind "interrupted"
+  meta_set "$dir" provider_code ""
+  release_worker_lock "$dir"
+}
+
+recover_stale_lock() {
+  local dir="$1"
+  local runner_pid
+
+  [[ -d "$dir/active" ]] || return 0
+  runner_pid="$(active_get "$dir" runner_pid)"
+  [[ -n "$runner_pid" ]] || return 0
+  if ! process_is_alive "$runner_pid"; then
+    finalize_interrupted_turn "$dir"
+  fi
 }
 
 require_worker() {
@@ -608,7 +646,88 @@ run_turn() {
   load_api_key
   validate_worker_execution "$worker_id"
   turn="$(prepare_turn "$worker_id" "$prompt" "headless")"
+  active_set "$(worker_dir "$worker_id")" runner_pid "$$"
   execute_headless_turn "$worker_id" "$turn"
+}
+
+launch_async_turn() {
+  local worker_id="$1"
+  local turn="$2"
+  local dir
+  local turn_label
+  local turn_dir
+  local result_file
+  local runner_pid
+
+  dir="$(worker_dir "$worker_id")"
+  printf -v turn_label '%04d' "$turn"
+  turn_dir="$dir/turns/$turn_label"
+  result_file="$turn_dir/result.md"
+
+  nohup "$SCRIPT_PATH" _execute-turn "$worker_id" "$turn" \
+    </dev/null >"$turn_dir/runner.log" 2>&1 &
+  runner_pid=$!
+  chmod 600 "$turn_dir/runner.log"
+  active_set "$dir" runner_pid "$runner_pid"
+  print_turn_control "$dir" "$turn" "RUNNING" "$result_file" "" ""
+  : >"$dir/active/launch.ready"
+  chmod 600 "$dir/active/launch.ready"
+}
+
+run_turn_async() {
+  local worker_id="$1"
+  local prompt="$2"
+  local turn
+
+  require_execution_dependencies
+  load_api_key
+  validate_worker_execution "$worker_id"
+  turn="$(prepare_turn "$worker_id" "$prompt" "headless")"
+  launch_async_turn "$worker_id" "$turn"
+}
+
+cmd_execute_turn() {
+  (($# == 2)) || die "_execute-turn requires a worker-id and turn"
+
+  local worker_id="$1"
+  local turn="$2"
+  local dir
+  local ready=false
+
+  validate_worker_id "$worker_id"
+  [[ "$turn" =~ ^[1-9][0-9]*$ ]] || die "invalid turn: $turn"
+  require_worker "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+
+  for _ in {1..500}; do
+    if [[ -f "$dir/active/launch.ready" ]]; then
+      ready=true
+      break
+    fi
+    sleep 0.01
+  done
+  if [[ "$ready" != "true" ]]; then
+    finalize_interrupted_turn "$dir"
+    die "async launch handshake timed out: $worker_id/$turn"
+  fi
+  [[ "$(active_get "$dir" runner_pid)" == "$$" ]] ||
+    die "async runner identity does not match: $worker_id/$turn"
+  [[ "$(active_get "$dir" turn)" == "$turn" ]] ||
+    die "async runner turn does not match: $worker_id/$turn"
+
+  execute_headless_turn "$worker_id" "$turn"
+}
+
+print_observed_turn() {
+  local dir="$1"
+  local status="$2"
+  local turn
+  local result_file
+
+  turn="$(meta_get "$dir" turn)"
+  result_file="$(turn_result_path "$dir" "$turn")"
+  print_turn_control "$dir" "$turn" "$status" "$result_file" \
+    "$(meta_get "$dir" error_kind)" "$(meta_get "$dir" provider_code)"
 }
 
 cmd_api_key() {
@@ -649,9 +768,14 @@ cmd_start() {
   local model="$CLAUDE_MODEL"
   local role="$DEFAULT_ROLE"
   local cwd="$PWD"
+  local async=false
 
   while (($#)); do
     case "$1" in
+      --async)
+        async=true
+        shift
+        ;;
       --model)
         (($# >= 2)) || die "--model requires a value"
         model="$2"
@@ -725,10 +849,19 @@ EOF
     printf '%s\n' "$task" >"$dir/task.md"
   )
 
-  run_turn "$worker_id" "$task"
+  if [[ "$async" == "true" ]]; then
+    run_turn_async "$worker_id" "$task"
+  else
+    run_turn "$worker_id" "$task"
+  fi
 }
 
 cmd_send() {
+  local async=false
+  if [[ "${1:-}" == "--async" ]]; then
+    async=true
+    shift
+  fi
   (($# >= 2)) || die "send requires a worker-id and message"
 
   local worker_id="$1"
@@ -743,7 +876,56 @@ cmd_send() {
   [[ -n "$(meta_get "$dir" claude_session_id)" ]] ||
     die "worker has no Claude session: $worker_id"
 
-  run_turn "$worker_id" "$message"
+  if [[ "$async" == "true" ]]; then
+    run_turn_async "$worker_id" "$message"
+  else
+    run_turn "$worker_id" "$message"
+  fi
+}
+
+cmd_wait() {
+  local timeout=20
+
+  while (($#)); do
+    case "$1" in
+      --timeout)
+        (($# >= 2)) || die "--timeout requires a value"
+        timeout="$2"
+        shift 2
+        ;;
+      --*) die "unknown option for wait: $1" ;;
+      *) break ;;
+    esac
+  done
+  (($# == 1)) || die "wait requires a worker-id"
+  [[ "$timeout" =~ ^[0-9]+$ ]] || die "wait timeout must be an integer from 0 to 300"
+  ((10#$timeout <= 300)) || die "wait timeout must be an integer from 0 to 300"
+
+  local worker_id="$1"
+  local dir
+  local status
+  local deadline
+  require_worker "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+  deadline="$(( $(date +%s) + 10#$timeout ))"
+
+  while :; do
+    recover_stale_lock "$dir"
+    status="$(meta_get "$dir" status)"
+    case "$status" in
+      DONE|BLOCKED|INVALID)
+        print_observed_turn "$dir" "$status"
+        printf '%s\n' 'WAIT_RESULT=TERMINAL'
+        return 0
+        ;;
+    esac
+    if (( $(date +%s) >= deadline )); then
+      print_observed_turn "$dir" "$status"
+      printf '%s\n' 'WAIT_RESULT=TIMEOUT'
+      return 0
+    fi
+    sleep 0.1
+  done
 }
 
 cmd_result() {
@@ -767,6 +949,7 @@ cmd_status() {
   local dir
   require_worker "$worker_id"
   dir="$(worker_dir "$worker_id")"
+  recover_stale_lock "$dir"
 
   printf 'WORKER_ID=%s\n' "$worker_id"
   printf 'STATUS=%s\n' "$(meta_get "$dir" status)"
@@ -783,6 +966,8 @@ cmd_status() {
   else
     printf '%s\n' 'FALLBACK_RECOMMENDED=false'
   fi
+  printf 'ACTIVE_MODE=%s\n' "$(active_get "$dir" mode)"
+  printf 'ACTIVE_TURN=%s\n' "$(active_get "$dir" turn)"
 }
 
 cmd_list() {
@@ -809,6 +994,8 @@ cmd_close() {
   local dir
   require_worker "$worker_id"
   dir="$(worker_dir "$worker_id")"
+  recover_stale_lock "$dir"
+  [[ ! -d "$dir/active" ]] || die "worker is active: $worker_id"
   meta_set "$dir" closed "true"
 
   printf 'WORKER_ID=%s\n' "$worker_id"
@@ -841,6 +1028,10 @@ main() {
       shift
       cmd_send "$@"
       ;;
+    wait)
+      shift
+      cmd_wait "$@"
+      ;;
     result)
       shift
       cmd_result "$@"
@@ -856,6 +1047,10 @@ main() {
     close)
       shift
       cmd_close "$@"
+      ;;
+    _execute-turn)
+      shift
+      cmd_execute_turn "$@"
       ;;
     *)
       die "unknown command: $command (try '$PROGRAM --help')"

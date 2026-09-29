@@ -25,3 +25,6 @@
 - Task 1: Ruling: `acquire_worker_lock DIR MODE TURN` 대신 `acquire_worker_lock DIR MODE`로 lock을 먼저 얻고 그 안에서 다음 turn을 계산·기록한다 — lock 전에 turn을 계산하면 두 호출이 같은 번호를 볼 수 있다 — 잘못되면 내부 호출부가 세 번째 인자를 기대하는 불일치가 생기지만 public interface 영향은 없다.
 - Task 1: RED — `bash tests/test_glm_agent.sh` → 229개 중 5개 실패: exit-zero quota 응답 3개가 `worker-protocol`, 겹친 send 2개가 성공/무오류.
 - Task 1: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 229/229 pass.
+- Task 2: Ruling: detached child가 `launch.ready`를 볼 때까지 executor 진입을 기다리게 한다 — 매우 빠른 fake/provider가 parent의 `runner_pid` 기록과 receipt보다 먼저 lock을 해제할 수 있다 — 잘못되면 launch handshake timeout이 정상 turn을 `interrupted`로 만들 수 있다.
+- Task 2: RED — `bash tests/test_glm_agent.sh` → 259개 중 22개 실패: `--async`/`wait` 부재, active fields 부재, stale lock 미복구.
+- Task 2: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 259/259 pass.
