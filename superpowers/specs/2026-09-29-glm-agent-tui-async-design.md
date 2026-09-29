@@ -204,10 +204,28 @@ for macOS Bash 3.2.
   `ERROR_KIND=interrupted`; its artifacts remain and the worker becomes
   available for a later turn.
 
+The CLI, rather than the bridge custom agent, owns process detachment. After
+preparing the turn, `start --async` and `send --async` launch an internal
+one-turn runner with the equivalent of:
+
+```sh
+nohup glm-agent _execute-turn WORKER_ID TURN \
+  </dev/null >TURN_DIR/runner.log 2>&1 &
+```
+
+The wrapper records the returned PID before emitting the control-plane
+receipt. All three standard streams are disconnected from the invoking Bash
+tool, and `nohup` protects the runner from the normal hangup caused when that
+tool or its parent `claude -p` exits. The custom agent therefore invokes only
+`glm-agent start --async` or `glm-agent send --async`; it does not background a
+foreground `glm-agent` or `claude -p` command itself.
+
 The detached runner receives only worker ID and turn number on its command
 line. The task body is read from the already-private `prompt.md`, keeping long
-or sensitive prompts out of process listings. It redirects its own control
-output to the turn directory and exits after one turn; it is not a daemon.
+or sensitive prompts out of process listings. The operating system may adopt
+the process after its parent exits. The runner redirects its own control output
+to the turn directory and exits after one turn; it is not a daemon and no
+bridge process remains open merely to keep it alive.
 
 ## 8. Turn preparation and execution
 
@@ -329,7 +347,11 @@ insufficient evidence for automatic fallback.
 
 ## 11. Failure and recovery semantics
 
-- A terminated routing interpreter does not terminate the detached GLM turn.
+- A normally exiting routing interpreter, Bash tool, or parent `claude -p`
+  does not terminate a successfully detached GLM turn.
+- Detachment is not a guarantee against an explicit process-tree kill, host
+  shutdown, or reboot. Those cases leave a detectable stale lock and are
+  recovered as interrupted work.
 - A terminated bounded `wait` loses no worker identity or state.
 - A runner that reaches a provider error persists terminal metadata before
   exiting.
@@ -365,7 +387,10 @@ Hermetic fake-Claude tests cover:
 - TUI batch result validation and lock release;
 - async start returning `RUNNING` before fake Claude completes;
 - async send preserving the original session, cwd, role, and model;
-- detached runner survival after its launching shell exits;
+- detached runner survival after its launching shell and parent bridge exit,
+  with stdin closed and every output stream redirected;
+- regression rejection of an implementation that merely appends `&` while
+  leaving inherited bridge pipes open;
 - one-active-operation lock enforcement and stale-lock recovery;
 - bounded wait terminal and timeout responses;
 - cancellation and stale-runner interruption finalization;
@@ -414,6 +439,8 @@ evidence separate from launch evidence. Selected.
 - TUI exit leaves a durable interactive batch and terminal worker status.
 - `start --async` and `send --async` return a worker receipt before provider
   completion.
+- Their detached runner continues after the invoking Bash tool and parent
+  `claude -p` exit normally; no bridge process is kept alive for supervision.
 - The plugin custom agents use asynchronous start/send and return the receipt
   immediately.
 - A later bridge can recover any launched worker using only `WORKER_ID`.
