@@ -1,7 +1,7 @@
 # glm-agent TUI and asynchronous worker supervision design
 
 Date: 2026-09-29
-Status: Proposed for user review
+Status: Approved
 Target release: 0.4.0
 
 ## 1. Intent
