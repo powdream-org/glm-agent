@@ -31,14 +31,20 @@ set -Eeuo pipefail
 
 prompt="${*: -1}"
 resume_id=""
+session_id_arg=""
 model=""
 append_prompt=""
 permission_bypass="no"
+invocation_mode="tui"
 
 while (($#)); do
   case "$1" in
     --resume)
       resume_id="$2"
+      shift 2
+      ;;
+    --session-id)
+      session_id_arg="$2"
       shift 2
       ;;
     --model)
@@ -53,6 +59,10 @@ while (($#)); do
       permission_bypass="yes"
       shift
       ;;
+    -p)
+      invocation_mode="headless"
+      shift
+      ;;
     *)
       shift
       ;;
@@ -64,6 +74,8 @@ done
   printf 'cwd=%s\n' "$PWD"
   printf 'model=%s\n' "$model"
   printf 'resume=%s\n' "$resume_id"
+  printf 'session_id_arg=%s\n' "$session_id_arg"
+  printf 'invocation_mode=%s\n' "$invocation_mode"
   printf 'result_file=%s\n' "${GLM_RESULT_FILE:-}"
   printf 'base_url=%s\n' "${ANTHROPIC_BASE_URL:-}"
   printf 'auth_token_set=%s\n' "$([[ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]] && printf yes || printf no)"
@@ -105,6 +117,33 @@ done
 if [[ -z "${GLM_RESULT_FILE:-}" ]]; then
   printf '%s\n' 'RUN_OK'
   exit 0
+fi
+
+if [[ "$invocation_mode" == "tui" ]]; then
+  case "${FAKE_TUI_BEHAVIOR:-done}" in
+    done)
+      printf '# Summary\nCompleted in fake TUI\n\nSTATUS: DONE\n' \
+        >"$GLM_RESULT_FILE"
+      exit 0
+      ;;
+    blocked)
+      printf '# Summary\nBlocked in fake TUI\n\nSTATUS: BLOCKED\n' \
+        >"$GLM_RESULT_FILE"
+      exit 0
+      ;;
+    missing)
+      exit 0
+      ;;
+    malformed)
+      printf '# Summary\nMalformed fake TUI result\n\nSTATUS: MAYBE\n' \
+        >"$GLM_RESULT_FILE"
+      exit 0
+      ;;
+    fail)
+      printf '%s\n' 'simulated TUI failure' >&2
+      exit 21
+      ;;
+  esac
 fi
 
 if [[ "$prompt" == *EXIT_ZERO_ZAI_ERROR* ]]; then
@@ -622,6 +661,136 @@ else
 fi
 unset FAKE_CLAUDE_HANG_STARTED FAKE_CLAUDE_HANG_RELEASE \
   FAKE_CLAUDE_CHILD_PID_FILE FAKE_CLAUDE_PROVIDER_PGID_FILE
+
+: >"$FAKE_LOG"
+capture "$SCRIPT" tui --role explorer --model haiku --cwd "$OTHER_PROJECT"
+assert_eq 'new managed TUI exits successfully' '0' "$RC"
+tui_output="$OUTPUT"
+tui_worker_id="$(printf '%s\n' "$tui_output" | sed -n 's/^WORKER_ID=//p' | head -n 1)"
+assert_contains 'new TUI prints a pre-launch receipt' "$tui_output" \
+  $'TURN=1\nMODEL=haiku\nROLE=explorer\nSTATUS=RUNNING\nRESULT='
+assert_contains 'new TUI prints terminal status after exit' "$tui_output" \
+  'STATUS=DONE'
+tui_dir="$GLM_AGENT_HOME/workers/$tui_worker_id"
+tui_meta="$tui_dir/meta"
+if [[ -f "$tui_meta" ]]; then
+  tui_session_id="$(meta_get_test "$tui_meta" claude_session_id)"
+else
+  tui_session_id=""
+fi
+if [[ "$tui_session_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+  pass 'new TUI stores a UUIDv4 session id'
+else
+  fail 'new TUI stores a UUIDv4 session id' "invalid session: $tui_session_id"
+fi
+tui_log="$(cat "$FAKE_LOG")"
+assert_contains 'new TUI invokes interactive Claude mode' "$tui_log" \
+  'invocation_mode=tui'
+assert_contains 'new TUI runs in selected cwd' "$tui_log" "cwd=$OTHER_PROJECT"
+assert_contains 'new TUI passes its allocated session id' "$tui_log" \
+  "session_id_arg=$tui_session_id"
+assert_file 'TUI batch stores mode' "$tui_dir/turns/0001/mode"
+assert_file 'TUI batch stores stderr' "$tui_dir/turns/0001/stderr.log"
+assert_file 'TUI batch stores result' "$tui_dir/turns/0001/result.md"
+assert_file 'TUI batch stores exit metadata' "$tui_dir/turns/0001/exit.meta"
+if [[ ! -e "$tui_dir/turns/0001/response.json" ]]; then
+  pass 'TUI batch does not fabricate a headless response'
+else
+  fail 'TUI batch does not fabricate a headless response' \
+    'unexpected response.json'
+fi
+
+capture "$SCRIPT" send "$tui_worker_id" 'continue after interactive work'
+assert_eq 'headless send resumes a TUI-created worker' '0' "$RC"
+assert_contains 'headless send after TUI uses turn two' "$OUTPUT" 'TURN=2'
+
+: >"$FAKE_LOG"
+if attach_output="$(
+  cd "$PROJECT"
+  "$SCRIPT" tui "$tui_worker_id" 2>"$TEST_ROOT/tui-attach.err"
+)"; then
+  attach_rc=0
+else
+  attach_rc=$?
+fi
+assert_eq 'existing worker TUI attach succeeds' '0' "$attach_rc"
+assert_contains 'TUI attach allocates the next batch' "$attach_output" 'TURN=3'
+attach_log="$(cat "$FAKE_LOG")"
+assert_contains 'TUI attach resumes stored session' "$attach_log" \
+  "resume=$tui_session_id"
+assert_contains 'TUI attach ignores caller cwd' "$attach_log" "cwd=$OTHER_PROJECT"
+assert_contains 'TUI attach preserves stored model' "$attach_log" 'model=haiku'
+assert_contains 'TUI attach preserves stored role prompt' "$attach_log" \
+  'role_prompt=explorer'
+
+capture "$SCRIPT" tui --model opus "$tui_worker_id"
+assert_eq 'existing TUI rejects model override' '2' "$RC"
+assert_contains 'TUI override error is clear' "$STDERR" \
+  'creation options cannot be used'
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'missing session TUI fixture'
+missing_session_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+missing_session_meta="$GLM_AGENT_HOME/workers/$missing_session_id/meta"
+sed 's/^claude_session_id=.*/claude_session_id=/' "$missing_session_meta" \
+  >"$missing_session_meta.next"
+mv "$missing_session_meta.next" "$missing_session_meta"
+capture "$SCRIPT" tui "$missing_session_id"
+assert_eq 'TUI attach rejects missing stored session' '2' "$RC"
+assert_contains 'missing TUI session error is clear' "$STDERR" \
+  'worker has no Claude session'
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'missing cwd TUI fixture'
+missing_cwd_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+missing_cwd_meta="$GLM_AGENT_HOME/workers/$missing_cwd_id/meta"
+sed 's|^cwd=.*|cwd=/path/that/does/not/exist|' "$missing_cwd_meta" \
+  >"$missing_cwd_meta.next"
+mv "$missing_cwd_meta.next" "$missing_cwd_meta"
+capture "$SCRIPT" tui "$missing_cwd_id"
+assert_eq 'TUI attach rejects missing stored cwd' '2' "$RC"
+assert_contains 'missing stored cwd error is clear' "$STDERR" \
+  'worker working directory does not exist'
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'active TUI fixture'
+active_tui_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+active_tui_dir="$GLM_AGENT_HOME/workers/$active_tui_id"
+mkdir "$active_tui_dir/active"
+cat >"$active_tui_dir/active/state" <<EOF
+mode=headless
+turn=2
+supervision=sync
+runner_pid=$$
+provider_pgid=
+started_at=$(date +%s)
+EOF
+capture "$SCRIPT" tui "$active_tui_id"
+assert_eq 'TUI attach rejects active worker' '2' "$RC"
+assert_contains 'active TUI error is clear' "$STDERR" 'worker is active'
+rm -f "$active_tui_dir/active/state"
+rmdir "$active_tui_dir/active"
+
+capture "$SCRIPT" close "$tui_worker_id"
+assert_eq 'TUI worker closes after exit' '0' "$RC"
+capture "$SCRIPT" tui "$tui_worker_id"
+assert_eq 'TUI attach rejects closed worker' '2' "$RC"
+assert_contains 'closed TUI error is clear' "$STDERR" 'worker is closed'
+
+export FAKE_TUI_BEHAVIOR=malformed
+capture "$SCRIPT" tui --cwd "$PROJECT"
+assert_eq 'malformed TUI result fails the batch' '1' "$RC"
+assert_contains 'malformed TUI result is INVALID' "$OUTPUT" 'STATUS=INVALID'
+assert_contains 'malformed TUI result explains failure' "$OUTPUT" \
+  'ERROR=result-status-invalid'
+export FAKE_TUI_BEHAVIOR=missing
+capture "$SCRIPT" tui --cwd "$PROJECT"
+assert_eq 'missing TUI result fails the batch' '1' "$RC"
+assert_contains 'missing TUI result explains failure' "$OUTPUT" \
+  'ERROR=result-file-missing'
+export FAKE_TUI_BEHAVIOR=fail
+capture "$SCRIPT" tui --cwd "$PROJECT"
+assert_eq 'nonzero TUI exit fails the batch' '1' "$RC"
+assert_contains 'nonzero TUI exit is invocation failure' "$OUTPUT" \
+  'ERROR=claude-exit-21'
+unset FAKE_TUI_BEHAVIOR
 
 capture "$SCRIPT" start --cwd "$PROJECT" 'stale lock recovery worker'
 assert_eq 'stale lock worker starts' '0' "$RC"

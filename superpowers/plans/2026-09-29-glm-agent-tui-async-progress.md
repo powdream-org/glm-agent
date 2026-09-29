@@ -31,3 +31,5 @@
 - Task 3: RED — `bash tests/test_glm_agent.sh` → 271개 중 9개 실패: cancel command·terminal response 부재. 추가 pre-provider race 테스트는 cancel 응답 7초로 실패.
 - Task 3: Ruling: provider는 Bash monitor mode의 별도 process group으로 실행하고 cancel은 검증된 negative PGID에 signal한다 — runner PID만 죽이면 Claude child가 남는다 — 잘못되면 자체 session을 분리한 tool child는 group 밖에서 살아남을 수 있다.
 - Task 3: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 275/275 pass; 실행 중 provider child 종료, pre-provider cancel, repeated/natural-terminal idempotency 확인.
+- Task 4: RED — `bash tests/test_glm_agent.sh` → 313개 중 32개 실패: `tui` command, session allocation, attach, artifacts, terminal validation 부재.
+- Task 4: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 313/313 pass; new TUI→headless send→다른 cwd attach 동일 session 확인.

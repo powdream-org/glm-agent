@@ -236,6 +236,16 @@ new_worker_id() {
     "${RANDOM:-0}"
 }
 
+new_claude_session_id() {
+  local hex
+
+  hex="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  [[ "$hex" =~ ^[0-9a-f]{32}$ ]] || die "failed to allocate Claude session id"
+  hex="${hex:0:12}4${hex:13:3}8${hex:17}"
+  printf '%s-%s-%s-%s-%s\n' \
+    "${hex:0:8}" "${hex:8:4}" "${hex:12:4}" "${hex:16:4}" "${hex:20:12}"
+}
+
 worker_dir() {
   printf '%s/%s\n' "$WORKERS_DIR" "$1"
 }
@@ -468,6 +478,27 @@ validate_worker_execution() {
     die "role prompt file is missing, unreadable, or empty: $role_prompt_path"
 }
 
+build_turn_system_prompt() {
+  local role="$1"
+  local result_file="$2"
+  local role_prompt_path
+  local system_prompt
+  local role_prompt
+
+  role_prompt_path="$(role_prompt_file "$role")"
+  system_prompt="$(<"$SYSTEM_PROMPT_FILE")"
+  role_prompt="$(<"$role_prompt_path")"
+  system_prompt+=$'\n\n<worker_role>\n'
+  system_prompt+="$role_prompt"
+  system_prompt+=$'\n</worker_role>'
+  system_prompt+=$'\n\n<current_turn_result_file>\n'
+  system_prompt+="For this turn, GLM_RESULT_FILE is exactly this absolute path:"
+  system_prompt+=$'\n'
+  system_prompt+="$result_file"
+  system_prompt+=$'\nWrite the report to that exact path, then read it back as required.\n</current_turn_result_file>'
+  printf '%s\n' "$system_prompt"
+}
+
 prepare_turn() {
   local worker_id="$1"
   local prompt="$2"
@@ -547,18 +578,7 @@ execute_headless_turn() {
   result_file="$turn_dir/result.md"
   validate_single_line "result file path" "$result_file"
 
-  role_prompt_path="$(role_prompt_file "$role")"
-  system_prompt="$(<"$SYSTEM_PROMPT_FILE")"
-  role_prompt="$(<"$role_prompt_path")"
-  system_prompt+=$'\n\n<worker_role>\n'
-  system_prompt+="$role_prompt"
-  system_prompt+=$'\n</worker_role>'
-
-  system_prompt+=$'\n\n<current_turn_result_file>\n'
-  system_prompt+="For this turn, GLM_RESULT_FILE is exactly this absolute path:"
-  system_prompt+=$'\n'
-  system_prompt+="$result_file"
-  system_prompt+=$'\nWrite the report to that exact path, then read it back as required.\n</current_turn_result_file>'
+  system_prompt="$(build_turn_system_prompt "$role" "$result_file")"
 
   args=(
     -p
@@ -791,6 +811,45 @@ print_observed_turn() {
     "$(meta_get "$dir" error_kind)" "$(meta_get "$dir" provider_code)"
 }
 
+create_worker() {
+  local model="$1"
+  local role="$2"
+  local cwd="$3"
+  local task="$4"
+  local session_id="${5:-}"
+  local worker_id
+  local dir
+
+  ensure_state_home
+  mkdir -p "$WORKERS_DIR"
+  chmod 700 "$WORKERS_DIR"
+  worker_id="$(new_worker_id)"
+  dir="$(worker_dir "$worker_id")"
+  mkdir "$dir"
+  chmod 700 "$dir"
+  mkdir "$dir/turns"
+  chmod 700 "$dir/turns"
+
+  (
+    umask 077
+    cat >"$dir/meta" <<EOF
+worker_id=$worker_id
+claude_session_id=$session_id
+model=$model
+role=$role
+cwd=$cwd
+turn=0
+status=NEW
+closed=false
+latest_result=
+error_kind=
+provider_code=
+EOF
+    printf '%s\n' "$task" >"$dir/task.md"
+  )
+  printf '%s\n' "$worker_id"
+}
+
 runner_identity_matches() {
   local dir="$1"
   local runner_pid
@@ -918,42 +977,187 @@ cmd_start() {
   require_execution_dependencies
   load_api_key
   require_system_prompt_file
-  ensure_state_home
-  mkdir -p "$WORKERS_DIR"
-  chmod 700 "$WORKERS_DIR"
-
   local worker_id
-  local dir
-  worker_id="$(new_worker_id)"
-  dir="$(worker_dir "$worker_id")"
-  mkdir "$dir"
-  chmod 700 "$dir"
-  mkdir "$dir/turns"
-  chmod 700 "$dir/turns"
-
-  (
-    umask 077
-    cat >"$dir/meta" <<EOF
-worker_id=$worker_id
-claude_session_id=
-model=$model
-role=$role
-cwd=$cwd
-turn=0
-status=NEW
-closed=false
-latest_result=
-error_kind=
-provider_code=
-EOF
-    printf '%s\n' "$task" >"$dir/task.md"
-  )
+  worker_id="$(create_worker "$model" "$role" "$cwd" "$task" "")"
 
   if [[ "$async" == "true" ]]; then
     run_turn_async "$worker_id" "$task"
   else
     run_turn "$worker_id" "$task"
   fi
+}
+
+run_tui_batch() {
+  local worker_id="$1"
+  local session_mode="$2"
+  local dir
+  local turn
+  local turn_label
+  local turn_dir
+  local result_file
+  local stderr_file
+  local exit_meta
+  local model
+  local role
+  local cwd
+  local session_id
+  local system_prompt
+  local started_at
+  local exit_code=0
+  local result_status
+  local provider_code
+  local error_kind
+  local -a args
+
+  validate_worker_execution "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+  model="$(meta_get "$dir" model)"
+  role="$(meta_get "$dir" role)"
+  cwd="$(meta_get "$dir" cwd)"
+  session_id="$(meta_get "$dir" claude_session_id)"
+  [[ -n "$session_id" ]] || die "worker has no Claude session: $worker_id"
+
+  turn="$(prepare_turn "$worker_id" "Managed Claude Code TUI batch" "tui")"
+  active_set "$dir" supervision "tui"
+  active_set "$dir" runner_pid "$$"
+  printf -v turn_label '%04d' "$turn"
+  turn_dir="$dir/turns/$turn_label"
+  result_file="$turn_dir/result.md"
+  stderr_file="$turn_dir/stderr.log"
+  exit_meta="$turn_dir/exit.meta"
+  system_prompt="$(build_turn_system_prompt "$role" "$result_file")"
+
+  args=(
+    --model "$model"
+    --dangerously-skip-permissions
+    --append-system-prompt "$system_prompt"
+  )
+  if [[ "$session_mode" == "new" ]]; then
+    args+=(--session-id "$session_id")
+  else
+    args+=(--resume "$session_id")
+  fi
+
+  print_turn_control "$dir" "$turn" "RUNNING" "$result_file" "" ""
+  printf 'CWD=%s\n' "$cwd"
+  started_at="$(date +%s)"
+  (
+    cd "$cwd"
+    export GLM_RESULT_FILE="$result_file"
+    run_glm_claude "${args[@]}"
+  ) 2>"$stderr_file" || exit_code=$?
+  chmod 600 "$stderr_file"
+  (
+    umask 077
+    cat >"$exit_meta" <<EOF
+started_at=$started_at
+ended_at=$(date +%s)
+exit_code=$exit_code
+EOF
+  )
+
+  if ((exit_code != 0)); then
+    provider_code="$(extract_zai_code /dev/null "$stderr_file")"
+    error_kind="$(classify_error_kind "$provider_code" "invocation")"
+    invalidate_turn "$dir" "$turn" "$result_file" "claude-exit-$exit_code" \
+      "$error_kind" "$provider_code"
+    return 1
+  fi
+  if [[ ! -s "$result_file" ]]; then
+    invalidate_turn "$dir" "$turn" "$result_file" "result-file-missing" \
+      "worker-protocol" ""
+    return 1
+  fi
+  chmod 600 "$result_file"
+  case "$(tail -n 1 "$result_file")" in
+    'STATUS: DONE') result_status="DONE" ;;
+    'STATUS: BLOCKED') result_status="BLOCKED" ;;
+    *)
+      invalidate_turn "$dir" "$turn" "$result_file" \
+        "result-status-invalid" "worker-protocol" ""
+      return 1
+      ;;
+  esac
+
+  meta_set "$dir" status "$result_status"
+  meta_set "$dir" latest_result "$result_file"
+  meta_set "$dir" error_kind ""
+  meta_set "$dir" provider_code ""
+  release_worker_lock "$dir"
+  print_turn_control "$dir" "$turn" "$result_status" "$result_file" "" ""
+}
+
+cmd_tui() {
+  local model="$CLAUDE_MODEL"
+  local role="$DEFAULT_ROLE"
+  local cwd="$PWD"
+  local creation_option=false
+
+  while (($#)); do
+    case "$1" in
+      --model)
+        (($# >= 2)) || die "--model requires a value"
+        model="$2"
+        creation_option=true
+        shift 2
+        ;;
+      --role)
+        (($# >= 2)) || die "--role requires a value"
+        role="$2"
+        creation_option=true
+        shift 2
+        ;;
+      --cwd)
+        (($# >= 2)) || die "--cwd requires a value"
+        cwd="$2"
+        creation_option=true
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        return 0
+        ;;
+      --*) die "unknown option for tui: $1" ;;
+      *) break ;;
+    esac
+  done
+  (($# <= 1)) || die "tui accepts at most one worker-id"
+
+  require_execution_dependencies
+  load_api_key
+  require_system_prompt_file
+  if (($# == 1)); then
+    [[ "$creation_option" == "false" ]] ||
+      die "TUI creation options cannot be used with an existing worker"
+    local worker_id="$1"
+    local dir
+    require_worker "$worker_id"
+    dir="$(worker_dir "$worker_id")"
+    recover_stale_lock "$dir"
+    [[ "$(meta_get "$dir" closed)" != "true" ]] ||
+      die "worker is closed: $worker_id"
+    [[ ! -d "$dir/active" ]] || die "worker is active: $worker_id"
+    [[ -n "$(meta_get "$dir" claude_session_id)" ]] ||
+      die "worker has no Claude session: $worker_id"
+    run_tui_batch "$worker_id" "resume"
+    return
+  fi
+
+  validate_single_line "model" "$model"
+  [[ -n "$model" ]] || die "model must not be empty"
+  validate_single_line "role" "$role"
+  validate_role "$role"
+  [[ -d "$cwd" ]] || die "working directory does not exist: $cwd"
+  cwd="$(cd "$cwd" && pwd -P)"
+  validate_single_line "working directory" "$cwd"
+  require_command od
+
+  local session_id
+  local worker_id
+  session_id="$(new_claude_session_id)"
+  worker_id="$(create_worker "$model" "$role" "$cwd" \
+    "Managed Claude Code TUI worker" "$session_id")"
+  run_tui_batch "$worker_id" "new"
 }
 
 cmd_send() {
@@ -1190,6 +1394,10 @@ main() {
     send)
       shift
       cmd_send "$@"
+      ;;
+    tui)
+      shift
+      cmd_tui "$@"
       ;;
     wait)
       shift
