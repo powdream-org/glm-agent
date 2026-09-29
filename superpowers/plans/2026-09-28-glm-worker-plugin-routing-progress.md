@@ -266,3 +266,29 @@
   및 enabled 상태를 확인했다.
 - component inventory: Agents 2 (`explorer`, `general-purpose`), Skills/Hooks/MCP/LSP
   0. API key나 session ID는 출력하지 않았다.
+
+### 0.3.0 — Sonnet routing interpreter
+
+- 실제 orchestration에서 bridge Haiku가 `glm-agent`를 호출하는 대신 브리프를
+  직접 수행한 사례를 routing failure로 판정했다. 결과에는 목차 블록 누락과
+  잘림도 있어 GLM worker 산출물의 증거로 사용할 수 없었다.
+- RED: plugin 계약 테스트가 release version, native interpreter model, 변경 없는
+  `TASK` 전달, 단일 Bash CLI 호출, routing evidence, invalid-request 목적지에서
+  11건 실패했다.
+- GREEN: `explorer`와 `general-purpose`를 native Sonnet routing interpreter로
+  변경했다. 두 agent는 긍정형 상태 머신으로 routing 필드를 검증하고 `TASK`를
+  변경 없이 한 번의 CLI 호출에 전달하며 control fields를 반환한다.
+- tool surface는 `Bash, Read`를 유지했다. 내부 GLM worker의 논리 모델과 권한은
+  기존 CLI 계약을 그대로 사용한다.
+- `/Users/h_kang/.claude/skills/my-superpowers/SKILL.md`의 bridge override도
+  `model: sonnet`으로 맞추고, `WORKER_ID`, `TURN`, `STATUS`, `RESULT`, worker
+  directory, durable result를 routing 완료 증거로 확인하도록 갱신했다.
+- version parity를 CLI/plugin/marketplace 모두 `0.3.0`으로 올렸다.
+- 자동 검증: CLI 220/220, plugin 40/40, Bash 문법, shellcheck,
+  `claude plugin validate --strict .`, `git diff --check` 통과.
+- 실제 custom-agent smoke: `claude --plugin-dir . --agent
+  glm-agent:explorer --model sonnet`으로 worker
+  `20260929T104448Z-89239-25069`를 생성했다. start는 turn 1 DONE, send는 동일
+  worker의 turn 2 DONE이었고 원래 cwd, explorer role, GLM Haiku model을
+  유지했다. 두 turn 모두 `result.md`와 raw artifacts를 생성했으며 repository
+  diff는 두 turn 전후 동일했다.

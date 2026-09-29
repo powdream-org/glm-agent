@@ -256,7 +256,7 @@ assert_contains 'help documents role option' "$help_output" \
 assert_contains 'help documents explorer role' "$help_output" 'explorer'
 assert_contains 'help documents fallback signal' "$help_output" \
   'FALLBACK_RECOMMENDED'
-assert_eq 'version is available' 'glm-agent 0.2.0' "$($SCRIPT --version)"
+assert_eq 'version is available' 'glm-agent 0.3.0' "$($SCRIPT --version)"
 
 secret='zai-test-secret-value'
 capture "$SCRIPT" api-key "$secret"

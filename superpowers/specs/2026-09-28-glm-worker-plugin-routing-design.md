@@ -80,8 +80,8 @@ Superpowers SDD / my-superpowers
   └─ provider 선택
        ├─ native Claude agent
        └─ GLM provider
-            ├─ glm-agent:explorer (Haiku bridge, role=explorer)
-            └─ glm-agent:general-purpose (Haiku bridge, role=general-purpose)
+            ├─ glm-agent:explorer (Sonnet interpreter, role=explorer)
+            └─ glm-agent:general-purpose (Sonnet interpreter, role=general-purpose)
                  ↓
             ${CLAUDE_PLUGIN_ROOT}/glm-agent
                  └─ Z.ai Claude Code session
@@ -111,10 +111,11 @@ plugin에는 모델별 agent가 아니라 역할별 agent 두 개를 둔다.
 강제하지 않는다. 오케스트레이터는 explorer 완료 후 예상하지 않은 diff가
 없는지 확인한다.
 
-두 custom agent 자체의 Claude model은 `haiku`로 고정한다. 이 agent들은 작업을
-직접 수행하지 않고 CLI를 호출하고 control-plane 결과만 돌려주는 얇은
-bridge다. 여기에서 선택하는 Haiku는 bridge 실행 비용이며, `GLM_MODEL`은 실제
-Z.ai worker 모델이다. 두 값을 혼동하지 않는다.
+두 custom agent 자체의 Claude model은 `sonnet`으로 고정한다. 이 agent들은
+`TASK`를 해석하는 작업자가 아니라, 필드를 검증하고 `TASK`를 그대로 CLI의 최종
+인자로 전달한 뒤 control-plane 결과를 돌려주는 routing interpreter다. 여기에서
+선택하는 Sonnet은 짧은 routing 비용이며, `GLM_MODEL`은 실제 Z.ai worker
+모델이다. 두 값을 혼동하지 않는다.
 
 ### 4.2 이중 지속성
 
@@ -177,7 +178,7 @@ CLAUDE.md -> AGENTS.md
 name: explorer # 다른 파일은 general-purpose
 description: Run or continue a persistent Z.ai GLM explorer when the orchestrator chooses GLM for codebase research.
 tools: Bash, Read
-model: haiku
+model: sonnet
 ---
 ```
 
@@ -213,6 +214,19 @@ bash "${CLAUDE_PLUGIN_ROOT}/glm-agent" ...
 
 `status`, `result`, `close`도 명시적 `ACTION`으로 허용한다. 필수 필드가 없거나
 모델이 세 alias 밖이면 추측하지 않고 호출 전 오류로 반환한다.
+
+bridge는 유효한 요청을 다음 완료 절차로 처리한다.
+
+1. routing 필드를 검증한다.
+2. action에 대응하는 `glm-agent` 명령을 선택한다.
+3. `TASK`를 변경 없이 최종 CLI 인자로 전달한다.
+4. 한 번의 Bash tool call로 명령을 실행한다.
+5. CLI control fields를 routing evidence로 반환한다.
+
+불완전한 요청의 목적지는 `PROVIDER=glm`,
+`BRIDGE_STATUS=INVALID_REQUEST`, `DETAIL=<missing or invalid field>` 응답이다.
+오케스트레이터는 `WORKER_ID`, `TURN`, `STATUS`, `RESULT`와 실제 worker directory,
+durable result를 확인한 뒤 GLM routing 성공으로 판정한다.
 
 ### 6.2 출력
 
@@ -281,7 +295,7 @@ subagent 좌석을 만들기로 결정한 시점마다 provider를 한 번 더 �
 
 선택은 모델 등급과 독립적이다. 예를 들어 “Sonnet 좌석”을 결정한 뒤 native
 Sonnet 또는 `GLM_MODEL=sonnet` 중 하나를 고른다. native 호출에는 실제 Agent
-`model`을 명시하고, GLM 호출에는 bridge의 Agent `model=haiku`와 prompt의
+`model`을 명시하고, GLM 호출에는 bridge의 Agent `model=sonnet`과 prompt의
 `GLM_MODEL=<논리 등급>`을 각각 명시한다. GLM을 선택한 다음 조사에는
 `glm-agent:explorer`, 구현·수정에는 `glm-agent:general-purpose`를 사용한다.
 

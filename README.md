@@ -30,8 +30,10 @@ claude plugin install glm-agent@glm-agent --scope user
 
 The plugin exposes `glm-agent:explorer` for repository research and
 `glm-agent:general-purpose` for implementation, testing, and debugging. The
-bridge agents use native Claude Haiku only as a thin control plane; the actual
-GLM logical model is selected separately for each new worker.
+bridge agents use native Claude Sonnet as short routing interpreters; the
+actual GLM logical model is selected separately for each new worker. Each
+interpreter passes `TASK` unchanged through one `glm-agent` CLI call and
+returns its control fields as routing evidence.
 
 ### Standalone CLI
 
@@ -131,6 +133,8 @@ values stored when the worker was created.
   implementation, refactoring, testing, and debugging.
 - Either agent can start an Opus, Sonnet, or Haiku logical worker when the
   delegation prompt specifies `GLM_MODEL`.
+- A routed turn is confirmed by its returned `WORKER_ID`, `TURN`, `STATUS`, and
+  `RESULT`, together with the worker directory and durable result on disk.
 - A `DONE` or `BLOCKED` turn does not close the worker. Continue it with the
   same bridge agent or its `WORKER_ID`; close it only by explicit request.
 

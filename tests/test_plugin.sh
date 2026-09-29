@@ -95,17 +95,32 @@ if [[ -f "$plugin_json" && -f "$marketplace_json" ]]; then
   assert_eq 'CLI and plugin versions match' "$cli_version" "$plugin_version"
   assert_eq 'CLI and marketplace versions match' "$cli_version" \
     "$marketplace_version"
+  assert_eq 'release version is 0.3.0' '0.3.0' "$cli_version"
 fi
 if [[ -f "$explorer_agent" ]]; then
   explorer_content="$(cat "$explorer_agent")"
+  explorer_frontmatter="$(sed -n '2,/^---$/p' "$explorer_agent")"
   explorer_flat="$(printf '%s' "$explorer_content" | tr '\n' ' ' | \
     sed -E 's/[[:space:]]+/ /g')"
   assert_contains 'explorer uses plugin-root CLI' "$explorer_content" \
     "\${CLAUDE_PLUGIN_ROOT}/glm-agent"
-  assert_contains 'explorer does not own worktrees' "$explorer_content" \
-    'Never create, switch, or delete a worktree.'
-  assert_contains 'explorer rejects unsupported GLM models' "$explorer_flat" \
-    'Reject any other GLM_MODEL value.'
+  assert_contains 'explorer leaves worktrees with the parent' \
+    "$explorer_flat" 'The parent performs all worktree operations.'
+  assert_contains 'explorer routes unsupported GLM models to invalid request' \
+    "$explorer_flat" \
+    'Complete every other GLM_MODEL value with BRIDGE_STATUS=INVALID_REQUEST.'
+  assert_contains 'explorer interpreter uses native Sonnet' \
+    "$explorer_frontmatter" 'model: sonnet'
+  assert_contains 'explorer keeps Bash and Read tools' \
+    "$explorer_frontmatter" 'tools: Bash, Read'
+  assert_contains 'explorer sends TASK unchanged to GLM' "$explorer_flat" \
+    'Pass TASK unchanged as the final CLI argument.'
+  assert_contains 'explorer uses one CLI Bash call' "$explorer_flat" \
+    'Execute the selected CLI command through one Bash tool call.'
+  assert_contains 'explorer returns routing evidence' "$explorer_flat" \
+    'Return the CLI control fields as routing evidence.'
+  assert_contains 'explorer defines invalid request destination' \
+    "$explorer_content" 'BRIDGE_STATUS=INVALID_REQUEST'
 fi
 
 if [[ -x "$bump_script" ]]; then
@@ -151,12 +166,27 @@ if [[ -x "$bump_script" ]]; then
 fi
 if [[ -f "$general_agent" ]]; then
   general_content="$(cat "$general_agent")"
+  general_frontmatter="$(sed -n '2,/^---$/p' "$general_agent")"
   general_flat="$(printf '%s' "$general_content" | tr '\n' ' ' | \
     sed -E 's/[[:space:]]+/ /g')"
-  assert_contains 'general agent never auto-closes' "$general_flat" \
-    'Never close a worker merely because a turn returned DONE or BLOCKED.'
-  assert_contains 'general agent rejects unsupported GLM models' \
-    "$general_flat" 'Reject any other GLM_MODEL value.'
+  assert_contains 'general agent keeps completed workers available' \
+    "$general_flat" \
+    'Keep the worker available after DONE or BLOCKED and close it for ACTION=close.'
+  assert_contains 'general agent routes unsupported GLM models to invalid request' \
+    "$general_flat" \
+    'Complete every other GLM_MODEL value with BRIDGE_STATUS=INVALID_REQUEST.'
+  assert_contains 'general interpreter uses native Sonnet' \
+    "$general_frontmatter" 'model: sonnet'
+  assert_contains 'general agent keeps Bash and Read tools' \
+    "$general_frontmatter" 'tools: Bash, Read'
+  assert_contains 'general agent sends TASK unchanged to GLM' \
+    "$general_flat" 'Pass TASK unchanged as the final CLI argument.'
+  assert_contains 'general agent uses one CLI Bash call' "$general_flat" \
+    'Execute the selected CLI command through one Bash tool call.'
+  assert_contains 'general agent returns routing evidence' "$general_flat" \
+    'Return the CLI control fields as routing evidence.'
+  assert_contains 'general agent defines invalid request destination' \
+    "$general_content" 'BRIDGE_STATUS=INVALID_REQUEST'
 fi
 
 if command -v claude >/dev/null 2>&1 &&

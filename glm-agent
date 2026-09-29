@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROGRAM="${0##*/}"
-VERSION="0.2.0"
+VERSION="0.3.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
 ROLE_PROMPTS_DIR="${GLM_ROLE_PROMPTS_DIR:-$SCRIPT_DIR/prompts}"

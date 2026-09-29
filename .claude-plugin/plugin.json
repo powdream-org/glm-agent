@@ -1,10 +1,17 @@
 {
   "name": "glm-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Persistent Z.ai GLM workers for Claude Code orchestration",
-  "author": { "name": "Heejoon Kang" },
+  "author": {
+    "name": "Heejoon Kang"
+  },
   "homepage": "https://github.com/powdream-org/glm-agent",
   "repository": "https://github.com/powdream-org/glm-agent",
   "license": "MIT",
-  "keywords": ["glm", "z.ai", "subagents", "orchestration"]
+  "keywords": [
+    "glm",
+    "z.ai",
+    "subagents",
+    "orchestration"
+  ]
 }
