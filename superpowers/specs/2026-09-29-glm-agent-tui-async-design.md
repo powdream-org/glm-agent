@@ -151,10 +151,12 @@ through 300. A wait timeout returns the current `STATUS=RUNNING` fields and
 20-second default. `status` remains an immediate, non-waiting snapshot.
 
 `cancel` is an explicit operator action for an active asynchronous headless
-turn. It signals the detached runner, waits a bounded interval for artifact
-finalization, and records `STATUS=INVALID` with `ERROR_KIND=interrupted` when
-the turn does not already have a terminal state. TUI sessions are exited from
-their owning terminal rather than through `cancel`.
+turn. It writes a durable cancellation request, terminates the provider process
+group, waits a bounded interval for artifact finalization, and escalates from
+`TERM` to `KILL` only when the group does not exit. The terminal result is
+`STATUS=INVALID` with `ERROR_KIND=interrupted` unless the turn had already
+reached another terminal state. TUI sessions are exited from their owning
+terminal rather than through `cancel`.
 
 ## 6. Custom-agent protocol
 
@@ -178,6 +180,12 @@ If a bridge invocation ends during a later `wait`, the parent already owns the
 worker ID and can issue `wait` or `status` through a fresh bridge. Bridge-agent
 identity is optional; worker identity is authoritative.
 
+An orchestrator request to stop an asynchronous GLM task dispatches
+`ACTION=cancel` for each recorded active worker and waits for its terminal
+control response. Merely stopping the native parent Claude turn does not imply
+cancellation: after a launch receipt, the detached worker intentionally has an
+independent lifetime.
+
 `my-superpowers` will use this lifecycle:
 
 1. Dispatch one Sonnet routing interpreter with `ACTION=start` or `send`.
@@ -191,8 +199,9 @@ identity is optional; worker identity is authoritative.
 
 One worker may have at most one active headless turn or TUI attachment. An
 atomic directory lock under the worker directory records active mode, turn,
-runner PID, and start time. `mkdir` provides the portable exclusion primitive
-for macOS Bash 3.2.
+runner PID, provider process-group ID, and start time. `mkdir` provides the
+portable exclusion primitive for macOS Bash 3.2. A cancellation-request marker
+under the lock closes the race between turn launch and provider-group startup.
 
 - `send`, `send --async`, and `tui <worker-id>` reject a live lock.
 - `close` rejects a live lock and preserves all files.
@@ -226,6 +235,32 @@ or sensitive prompts out of process listings. The operating system may adopt
 the process after its parent exits. The runner redirects its own control output
 to the turn directory and exits after one turn; it is not a daemon and no
 bridge process remains open merely to keep it alive.
+
+Inside the detached runner, Bash monitor mode (`set -m`) starts the provider as
+a distinct process group. The runner records the actual PGID before waiting for
+Claude. This is supported by the project's macOS Bash 3.2 baseline and lets
+`cancel` address Claude together with child commands that remain in Claude's
+process group, rather than only the outer wrapper PID. A tool that deliberately
+creates its own detached session is outside this process-group contract and is
+why the result prompt does not treat background-process startup as completion.
+
+Cancellation follows this order:
+
+1. Validate that the lock still belongs to the requested worker and turn, then
+   create the cancellation-request marker atomically.
+2. If a provider PGID is recorded and still belongs to that active turn, send
+   `TERM` to the negative PGID so every member receives it.
+3. If provider startup is still in progress, the runner observes the marker
+   before or immediately after launch and skips or terminates the provider.
+4. Wait a short grace period for the runner to preserve partial artifacts,
+   classify the turn as interrupted, and release the lock.
+5. Send `KILL` to a still-live provider group and runner only after revalidating
+   their recorded identities, then finalize interrupted state if the runner
+   could not do so.
+
+This makes `cancel` idempotent and avoids signaling a reused PID or an unrelated
+process group. Killing only the runner PID is insufficient because a spawned
+Claude or tool process could otherwise survive it.
 
 ## 8. Turn preparation and execution
 
@@ -393,7 +428,11 @@ Hermetic fake-Claude tests cover:
   leaving inherited bridge pipes open;
 - one-active-operation lock enforcement and stale-lock recovery;
 - bounded wait terminal and timeout responses;
-- cancellation and stale-runner interruption finalization;
+- cancellation before provider startup, during provider execution, and after a
+  natural terminal transition;
+- process-group `TERM`/bounded `KILL` escalation, including provider child
+  processes, plus stale-runner interruption finalization;
+- PID/PGID identity revalidation and repeated-cancel idempotency;
 - close rejection while active and history preservation afterward;
 - quota classification for non-zero exits and exit-zero error JSON;
 - API key and session ID non-disclosure in every control response;
@@ -447,6 +486,9 @@ evidence separate from launch evidence. Selected.
 - `wait` is bounded and distinguishes timeout from semantic completion.
 - `cancel` preserves partial artifacts and returns the worker to an idle,
   terminally classified state.
+- Cancellation terminates the provider process group, including child commands
+  that remain in it, without requiring the original bridge agent to remain
+  alive.
 - Provider quota errors are classified from all supported Claude error shapes.
 - The parent orchestrator can fall back to the same native logical tier after
   receiving a persisted quota-exhausted result.
