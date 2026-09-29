@@ -137,6 +137,24 @@ if [[ "$prompt" == *WAIT_FOR_RELEASE* ]]; then
   }
 fi
 
+if [[ "$prompt" == *HANG_WITH_CHILD* ]]; then
+  sleep 60 &
+  fake_child_pid=$!
+  printf '%s\n' "$fake_child_pid" >"$FAKE_CLAUDE_CHILD_PID_FILE"
+  ps -o pgid= -p "$$" | tr -d ' ' >"$FAKE_CLAUDE_PROVIDER_PGID_FILE"
+  : >"$FAKE_CLAUDE_HANG_STARTED"
+  cleanup_fake_child() {
+    kill "$fake_child_pid" 2>/dev/null || true
+    wait "$fake_child_pid" 2>/dev/null || true
+  }
+  trap cleanup_fake_child EXIT
+  for _ in {1..1000}; do
+    [[ -f "$FAKE_CLAUDE_HANG_RELEASE" ]] && break
+    sleep 0.01
+  done
+  [[ -f "$FAKE_CLAUDE_HANG_RELEASE" ]] || exit 19
+fi
+
 case "$prompt" in
   *MISSING_RESULT*)
     ;;
@@ -504,6 +522,106 @@ assert_contains 'async send resumes the stored session' "$async_log" \
   'resume=session-1'
 assert_contains 'async send uses the stored cwd' "$async_log" "cwd=$PROJECT"
 unset FAKE_CLAUDE_BLOCK_STARTED FAKE_CLAUDE_BLOCK_RELEASE
+
+cancel_started="$TEST_ROOT/cancel.started"
+cancel_release="$TEST_ROOT/cancel.release"
+cancel_child_pid_file="$TEST_ROOT/cancel.child.pid"
+cancel_provider_pgid_file="$TEST_ROOT/cancel.provider.pgid"
+export FAKE_CLAUDE_HANG_STARTED="$cancel_started"
+export FAKE_CLAUDE_HANG_RELEASE="$cancel_release"
+export FAKE_CLAUDE_CHILD_PID_FILE="$cancel_child_pid_file"
+export FAKE_CLAUDE_PROVIDER_PGID_FILE="$cancel_provider_pgid_file"
+capture "$SCRIPT" start --async --cwd "$PROJECT" 'HANG_WITH_CHILD cancel me'
+assert_eq 'cancel test async worker starts' '0' "$RC"
+cancel_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+for _ in {1..500}; do
+  [[ -f "$cancel_started" && -s "$cancel_child_pid_file" ]] && break
+  sleep 0.01
+done
+cancel_child_pid="$(cat "$cancel_child_pid_file" 2>/dev/null || true)"
+cancel_provider_pgid="$(cat "$cancel_provider_pgid_file" 2>/dev/null || true)"
+if [[ -n "$cancel_child_pid" ]] && kill -0 "$cancel_child_pid" 2>/dev/null; then
+  pass 'cancel test provider child is running'
+else
+  fail 'cancel test provider child is running' 'provider child did not start'
+fi
+capture "$SCRIPT" cancel "$cancel_worker_id"
+cancel_rc="$RC"
+cancel_output="$OUTPUT"
+cancel_stderr="$STDERR"
+if ((cancel_rc != 0)); then
+  : >"$cancel_release"
+fi
+assert_eq 'cancel succeeds for an active async worker' '0' "$cancel_rc"
+assert_contains 'cancel reports INVALID terminal status' "$cancel_output" \
+  'STATUS=INVALID'
+assert_contains 'cancel classifies interruption' "$cancel_output" \
+  'ERROR_KIND=interrupted'
+assert_contains 'cancel reports cancellation result' "$cancel_output" \
+  'CANCEL_RESULT=CANCELLED'
+for _ in {1..100}; do
+  if ! kill -0 "$cancel_child_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.01
+done
+if ! kill -0 "$cancel_child_pid" 2>/dev/null; then
+  pass 'cancel terminates provider child processes'
+else
+  fail 'cancel terminates provider child processes' \
+    "child $cancel_child_pid remains in provider group $cancel_provider_pgid"
+fi
+
+capture "$SCRIPT" cancel "$cancel_worker_id"
+assert_eq 'repeated cancel is idempotent' '0' "$RC"
+assert_contains 'repeated cancel reports terminal worker' "$OUTPUT" \
+  'CANCEL_RESULT=ALREADY_TERMINAL'
+
+capture "$SCRIPT" cancel "$async_worker_id"
+assert_eq 'cancel after natural completion is idempotent' '0' "$RC"
+assert_contains 'natural terminal state is preserved on cancel' "$OUTPUT" \
+  'STATUS=DONE'
+assert_contains 'completed cancel reports already terminal' "$OUTPUT" \
+  'CANCEL_RESULT=ALREADY_TERMINAL'
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'pre-provider cancel fixture'
+assert_eq 'pre-provider cancel fixture starts' '0' "$RC"
+pre_cancel_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+pre_cancel_dir="$GLM_AGENT_HOME/workers/$pre_cancel_worker_id"
+mkdir "$pre_cancel_dir/turns/0002" "$pre_cancel_dir/active"
+printf '%s\n' 'headless' >"$pre_cancel_dir/turns/0002/mode"
+printf '%s\n' 'provider must not start' >"$pre_cancel_dir/turns/0002/prompt.md"
+cat >"$pre_cancel_dir/active/state" <<EOF
+mode=headless
+turn=2
+supervision=async
+runner_pid=
+provider_pgid=
+started_at=$(date +%s)
+EOF
+sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
+  "$pre_cancel_dir/meta" >"$pre_cancel_dir/meta.next"
+mv "$pre_cancel_dir/meta.next" "$pre_cancel_dir/meta"
+"$SCRIPT" _execute-turn "$pre_cancel_worker_id" 2 \
+  >"$pre_cancel_dir/turns/0002/runner.log" 2>&1 &
+pre_cancel_runner_pid=$!
+sed "s/^runner_pid=.*/runner_pid=$pre_cancel_runner_pid/" \
+  "$pre_cancel_dir/active/state" >"$pre_cancel_dir/active/state.next"
+mv "$pre_cancel_dir/active/state.next" "$pre_cancel_dir/active/state"
+pre_cancel_started_at="$(date +%s)"
+capture "$SCRIPT" cancel "$pre_cancel_worker_id"
+pre_cancel_elapsed="$(( $(date +%s) - pre_cancel_started_at ))"
+assert_eq 'cancel before provider startup succeeds' '0' "$RC"
+assert_contains 'pre-provider cancel is interrupted' "$OUTPUT" \
+  'ERROR_KIND=interrupted'
+if ((pre_cancel_elapsed <= 2)); then
+  pass 'pre-provider cancel does not wait for launch timeout'
+else
+  fail 'pre-provider cancel does not wait for launch timeout' \
+    "cancel took ${pre_cancel_elapsed}s"
+fi
+unset FAKE_CLAUDE_HANG_STARTED FAKE_CLAUDE_HANG_RELEASE \
+  FAKE_CLAUDE_CHILD_PID_FILE FAKE_CLAUDE_PROVIDER_PGID_FILE
 
 capture "$SCRIPT" start --cwd "$PROJECT" 'stale lock recovery worker'
 assert_eq 'stale lock worker starts' '0' "$RC"

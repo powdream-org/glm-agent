@@ -300,6 +300,7 @@ acquire_worker_lock() {
     cat >"$active_dir/state" <<EOF
 mode=$mode
 turn=
+supervision=
 runner_pid=
 provider_pgid=
 started_at=$(date +%s)
@@ -321,6 +322,12 @@ process_is_alive() {
   local pid="$1"
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   kill -0 "$pid" 2>/dev/null
+}
+
+process_group_is_alive() {
+  local pgid="$1"
+  [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 -- "-$pgid" 2>/dev/null
 }
 
 turn_result_path() {
@@ -516,6 +523,8 @@ execute_headless_turn() {
   local role
   local role_prompt_path
   local role_prompt
+  local provider_pid
+  local provider_pgid
   local -a args
 
   require_execution_dependencies
@@ -562,13 +571,49 @@ execute_headless_turn() {
     args+=(--resume "$session_id")
   fi
 
+  if [[ -f "$dir/active/cancel.requested" ]]; then
+    : >"$response_file"
+    : >"$stderr_file"
+    chmod 600 "$response_file" "$stderr_file"
+    invalidate_turn "$dir" "$turn" "$result_file" "cancelled" \
+      "interrupted" ""
+    return 1
+  fi
+
+  set -m
   (
     cd "$cwd"
     export GLM_RESULT_FILE="$result_file"
     run_glm_claude "${args[@]}" "$prompt"
-  ) >"$response_file" 2>"$stderr_file" || exit_code=$?
+  ) >"$response_file" 2>"$stderr_file" &
+  provider_pid=$!
+  provider_pgid="$(ps -o pgid= -p "$provider_pid" | tr -d ' ')"
+  if [[ ! "$provider_pgid" =~ ^[1-9][0-9]*$ ]]; then
+    kill "$provider_pid" 2>/dev/null || true
+    wait "$provider_pid" 2>/dev/null || true
+    set +m
+    invalidate_turn "$dir" "$turn" "$result_file" \
+      "provider-process-group-missing" "invocation" ""
+    return 1
+  fi
+  active_set "$dir" provider_pgid "$provider_pgid"
+  if [[ -f "$dir/active/cancel.requested" ]]; then
+    kill -TERM -- "-$provider_pgid" 2>/dev/null || true
+  fi
+  if wait "$provider_pid"; then
+    exit_code=0
+  else
+    exit_code=$?
+  fi
+  set +m
 
   chmod 600 "$response_file" "$stderr_file"
+
+  if [[ -f "$dir/active/cancel.requested" ]]; then
+    invalidate_turn "$dir" "$turn" "$result_file" "cancelled" \
+      "interrupted" ""
+    return 1
+  fi
 
   provider_code="$(extract_zai_code "$response_file" "$stderr_file")"
   if ((exit_code != 0)) ||
@@ -646,6 +691,7 @@ run_turn() {
   load_api_key
   validate_worker_execution "$worker_id"
   turn="$(prepare_turn "$worker_id" "$prompt" "headless")"
+  active_set "$(worker_dir "$worker_id")" supervision "sync"
   active_set "$(worker_dir "$worker_id")" runner_pid "$$"
   execute_headless_turn "$worker_id" "$turn"
 }
@@ -668,6 +714,7 @@ launch_async_turn() {
     </dev/null >"$turn_dir/runner.log" 2>&1 &
   runner_pid=$!
   chmod 600 "$turn_dir/runner.log"
+  active_set "$dir" supervision "async"
   active_set "$dir" runner_pid "$runner_pid"
   print_turn_control "$dir" "$turn" "RUNNING" "$result_file" "" ""
   : >"$dir/active/launch.ready"
@@ -692,14 +739,28 @@ cmd_execute_turn() {
   local worker_id="$1"
   local turn="$2"
   local dir
+  local result_file
+  local turn_label
+  local turn_dir
   local ready=false
 
   validate_worker_id "$worker_id"
   [[ "$turn" =~ ^[1-9][0-9]*$ ]] || die "invalid turn: $turn"
   require_worker "$worker_id"
   dir="$(worker_dir "$worker_id")"
+  printf -v turn_label '%04d' "$turn"
+  turn_dir="$dir/turns/$turn_label"
+  result_file="$turn_dir/result.md"
 
   for _ in {1..500}; do
+    if [[ -f "$dir/active/cancel.requested" ]]; then
+      : >"$turn_dir/response.json"
+      : >"$turn_dir/stderr.log"
+      chmod 600 "$turn_dir/response.json" "$turn_dir/stderr.log"
+      invalidate_turn "$dir" "$turn" "$result_file" "cancelled" \
+        "interrupted" ""
+      return 1
+    fi
     if [[ -f "$dir/active/launch.ready" ]]; then
       ready=true
       break
@@ -728,6 +789,45 @@ print_observed_turn() {
   result_file="$(turn_result_path "$dir" "$turn")"
   print_turn_control "$dir" "$turn" "$status" "$result_file" \
     "$(meta_get "$dir" error_kind)" "$(meta_get "$dir" provider_code)"
+}
+
+runner_identity_matches() {
+  local dir="$1"
+  local runner_pid
+  local worker_id
+  local turn
+  local command_line
+
+  runner_pid="$(active_get "$dir" runner_pid)"
+  worker_id="$(meta_get "$dir" worker_id)"
+  turn="$(active_get "$dir" turn)"
+  process_is_alive "$runner_pid" || return 1
+  command_line="$(ps -o command= -p "$runner_pid" 2>/dev/null || true)"
+  [[ "$command_line" == *"_execute-turn $worker_id $turn"* ]]
+}
+
+valid_provider_group() {
+  local dir="$1"
+  local pgid
+  local actual_pgid
+  local own_pgid
+
+  pgid="$(active_get "$dir" provider_pgid)"
+  [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || return 1
+  own_pgid="$(ps -o pgid= -p "$$" | tr -d ' ')"
+  [[ "$pgid" != "$own_pgid" ]] || return 1
+  actual_pgid="$(ps -o pgid= -p "$pgid" 2>/dev/null | tr -d ' ')"
+  [[ "$actual_pgid" == "$pgid" ]]
+}
+
+signal_provider_group() {
+  local dir="$1"
+  local signal="$2"
+  local pgid
+
+  valid_provider_group "$dir" || return 1
+  pgid="$(active_get "$dir" provider_pgid)"
+  kill "-$signal" -- "-$pgid" 2>/dev/null
 }
 
 cmd_api_key() {
@@ -928,6 +1028,69 @@ cmd_wait() {
   done
 }
 
+cmd_cancel() {
+  (($# == 1)) || die "cancel requires a worker-id"
+
+  local worker_id="$1"
+  local dir
+  local status
+  local runner_pid
+  require_worker "$worker_id"
+  dir="$(worker_dir "$worker_id")"
+  recover_stale_lock "$dir"
+
+  if [[ ! -d "$dir/active" ]]; then
+    status="$(meta_get "$dir" status)"
+    case "$status" in
+      DONE|BLOCKED|INVALID)
+        print_observed_turn "$dir" "$status"
+        printf '%s\n' 'CANCEL_RESULT=ALREADY_TERMINAL'
+        return 0
+        ;;
+      *) die "worker has no active asynchronous turn: $worker_id" ;;
+    esac
+  fi
+
+  [[ "$(active_get "$dir" mode)" == "headless" &&
+     "$(active_get "$dir" supervision)" == "async" ]] ||
+    die "worker is not running an asynchronous headless turn: $worker_id"
+  runner_identity_matches "$dir" ||
+    die "active runner identity is invalid: $worker_id"
+
+  : >"$dir/active/cancel.requested"
+  chmod 600 "$dir/active/cancel.requested"
+  signal_provider_group "$dir" TERM || true
+
+  for _ in {1..50}; do
+    [[ ! -d "$dir/active" ]] && break
+    sleep 0.1
+  done
+
+  if [[ -d "$dir/active" ]]; then
+    runner_pid="$(active_get "$dir" runner_pid)"
+    if runner_identity_matches "$dir"; then
+      kill -TERM "$runner_pid" 2>/dev/null || true
+    fi
+    for _ in {1..10}; do
+      [[ ! -d "$dir/active" ]] && break
+      sleep 0.1
+    done
+  fi
+
+  if [[ -d "$dir/active" ]]; then
+    signal_provider_group "$dir" KILL || true
+    runner_pid="$(active_get "$dir" runner_pid)"
+    if runner_identity_matches "$dir"; then
+      kill -KILL "$runner_pid" 2>/dev/null || true
+    fi
+    finalize_interrupted_turn "$dir"
+  fi
+
+  status="$(meta_get "$dir" status)"
+  print_observed_turn "$dir" "$status"
+  printf '%s\n' 'CANCEL_RESULT=CANCELLED'
+}
+
 cmd_result() {
   (($# == 1)) || die "result requires a worker-id"
 
@@ -1031,6 +1194,10 @@ main() {
     wait)
       shift
       cmd_wait "$@"
+      ;;
+    cancel)
+      shift
+      cmd_cancel "$@"
       ;;
     result)
       shift

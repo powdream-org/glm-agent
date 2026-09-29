@@ -28,3 +28,6 @@
 - Task 2: Ruling: detached child가 `launch.ready`를 볼 때까지 executor 진입을 기다리게 한다 — 매우 빠른 fake/provider가 parent의 `runner_pid` 기록과 receipt보다 먼저 lock을 해제할 수 있다 — 잘못되면 launch handshake timeout이 정상 turn을 `interrupted`로 만들 수 있다.
 - Task 2: RED — `bash tests/test_glm_agent.sh` → 259개 중 22개 실패: `--async`/`wait` 부재, active fields 부재, stale lock 미복구.
 - Task 2: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 259/259 pass.
+- Task 3: RED — `bash tests/test_glm_agent.sh` → 271개 중 9개 실패: cancel command·terminal response 부재. 추가 pre-provider race 테스트는 cancel 응답 7초로 실패.
+- Task 3: Ruling: provider는 Bash monitor mode의 별도 process group으로 실행하고 cancel은 검증된 negative PGID에 signal한다 — runner PID만 죽이면 Claude child가 남는다 — 잘못되면 자체 session을 분리한 tool child는 group 밖에서 살아남을 수 있다.
+- Task 3: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 275/275 pass; 실행 중 provider child 종료, pre-provider cancel, repeated/natural-terminal idempotency 확인.
