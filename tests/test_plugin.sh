@@ -119,6 +119,18 @@ if [[ -f "$explorer_agent" ]]; then
     'Execute the selected CLI command through one Bash tool call.'
   assert_contains 'explorer returns routing evidence' "$explorer_flat" \
     'Return the CLI control fields as routing evidence.'
+  assert_contains 'explorer starts workers asynchronously' "$explorer_flat" \
+    'start --async --role explorer'
+  assert_contains 'explorer sends turns asynchronously' "$explorer_flat" \
+    'send --async "$WORKER_ID" "$TASK"'
+  assert_contains 'explorer waits with a bounded timeout' "$explorer_flat" \
+    'wait --timeout 20 "$WORKER_ID"'
+  assert_contains 'explorer routes cancellation' "$explorer_flat" \
+    'cancel "$WORKER_ID"'
+  assert_contains 'explorer defines launch completion' "$explorer_flat" \
+    'start and send reach their destination when the CLI returns WORKER_ID, TURN, and STATUS=RUNNING.'
+  assert_contains 'explorer distinguishes semantic completion' "$explorer_flat" \
+    'Semantic completion comes from a later wait or status response with STATUS=DONE or STATUS=BLOCKED.'
   assert_contains 'explorer defines invalid request destination' \
     "$explorer_content" 'BRIDGE_STATUS=INVALID_REQUEST'
 fi
@@ -185,6 +197,18 @@ if [[ -f "$general_agent" ]]; then
     'Execute the selected CLI command through one Bash tool call.'
   assert_contains 'general agent returns routing evidence' "$general_flat" \
     'Return the CLI control fields as routing evidence.'
+  assert_contains 'general agent starts workers asynchronously' "$general_flat" \
+    'start --async --role general-purpose'
+  assert_contains 'general agent sends turns asynchronously' "$general_flat" \
+    'send --async "$WORKER_ID" "$TASK"'
+  assert_contains 'general agent waits with a bounded timeout' "$general_flat" \
+    'wait --timeout 20 "$WORKER_ID"'
+  assert_contains 'general agent routes cancellation' "$general_flat" \
+    'cancel "$WORKER_ID"'
+  assert_contains 'general agent defines launch completion' "$general_flat" \
+    'start and send reach their destination when the CLI returns WORKER_ID, TURN, and STATUS=RUNNING.'
+  assert_contains 'general agent distinguishes semantic completion' "$general_flat" \
+    'Semantic completion comes from a later wait or status response with STATUS=DONE or STATUS=BLOCKED.'
   assert_contains 'general agent defines invalid request destination' \
     "$general_content" 'BRIDGE_STATUS=INVALID_REQUEST'
 fi

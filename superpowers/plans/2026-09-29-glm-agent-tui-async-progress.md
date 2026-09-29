@@ -33,3 +33,7 @@
 - Task 3: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 275/275 pass; 실행 중 provider child 종료, pre-provider cancel, repeated/natural-terminal idempotency 확인.
 - Task 4: RED — `bash tests/test_glm_agent.sh` → 313개 중 32개 실패: `tui` command, session allocation, attach, artifacts, terminal validation 부재.
 - Task 4: complete — `bash -n glm-agent tests/test_glm_agent.sh && bash tests/test_glm_agent.sh` → 313/313 pass; new TUI→headless send→다른 cwd attach 동일 session 확인.
+- Task 5: RED — `bash tests/test_plugin.sh` → 52개 중 12개 실패: 두 custom agent에 async start/send, bounded wait, cancel, RUNNING/terminal 구분 부재.
+- Task 5: Ruling: skill pressure RED는 User가 제시한 실제 실패 보고(bridge가 GLM worker를 호출하지 않고 TASK를 직접 수행)를 사용하고 별도 agent 좌석은 만들지 않는다 — native inline 실행 선택과 실제 관측이 이미 baseline을 제공한다 — 잘못되면 새 문구의 해석 실패를 Task 6 live smoke에서야 발견한다.
+- Task 5: `my-superpowers` canonical을 `/Users/h_kang/.agents/skills/my-superpowers/SKILL.md`로 옮기고 `/Users/h_kang/.claude/skills/my-superpowers`를 symlink로 연결했다. SHA-256 `a424d07e47210d8ce9bfb6c1bc36a97ef05ef7b53acc2e52277af85ba1b82e81`.
+- Task 5: complete — `bash tests/test_plugin.sh && claude plugin validate --strict .` → 52/52 pass, strict validation passed; Claude/Codex skill 경로 `cmp` 일치.
