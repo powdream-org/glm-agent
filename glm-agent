@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROGRAM="${0##*/}"
-VERSION="0.3.0"
+VERSION="0.4.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
@@ -31,7 +31,13 @@ USAGE
   glm-agent api-key [key]
   glm-agent run <prompt>
   glm-agent start [--role <role>] [--model <alias>] [--cwd <directory>] <task>
+  glm-agent start --async [--role <role>] [--model <alias>] [--cwd <directory>] <task>
   glm-agent send <worker-id> <message>
+  glm-agent send --async <worker-id> <message>
+  glm-agent wait [--timeout <seconds>] <worker-id>
+  glm-agent cancel <worker-id>
+  glm-agent tui [--role <role>] [--model <alias>] [--cwd <directory>]
+  glm-agent tui <worker-id>
   glm-agent result <worker-id>
   glm-agent status <worker-id>
   glm-agent list
@@ -43,7 +49,8 @@ DESCRIPTION
   glm-agent runs GLM through Claude Code using Z.ai's Anthropic-compatible
   endpoint. A worker is durable across invocations: start creates a Claude
   session and send resumes that same session in its original directory with
-  its original role and model.
+  its original role and model. tui opens that same managed session in native
+  Claude Code. --async returns worker identity before provider completion.
 
   stdout is compact and machine-readable. Detailed reports, raw Claude JSON,
   and stderr are stored under ~/.glm/workers/<worker-id>/.
@@ -74,9 +81,34 @@ COMMANDS
         PROVIDER_CODE=<Z.ai-code-or-empty>
         FALLBACK_RECOMMENDED=true|false
 
+  start --async [--role <role>] [--model <alias>] [--cwd <directory>] <task>
+      Create the same persistent worker, detach its first headless turn, and
+      return STATUS=RUNNING with its worker ID and expected result path.
+
   send <worker-id> <message>
       Execute another turn by resuming the stored Claude session. send always
       uses the worker's original cwd, role, and model.
+
+  send --async <worker-id> <message>
+      Resume the stored session in a detached turn and return its RUNNING
+      receipt immediately.
+
+  wait [--timeout <seconds>] <worker-id>
+      Observe a worker for up to 20 seconds by default (0..300). A terminal
+      result returns WAIT_RESULT=TERMINAL. A bounded timeout returns
+      WAIT_RESULT=TIMEOUT while the worker continues.
+
+  cancel <worker-id>
+      Stop an active asynchronous headless turn, including provider processes
+      in its managed process group. Partial artifacts remain and the turn is
+      classified INVALID/interrupted.
+
+  tui [--role <role>] [--model <alias>] [--cwd <directory>]
+      Create a managed worker and open its Z.ai-backed native Claude Code TUI.
+
+  tui <worker-id>
+      Open the worker's stored Claude session in its original cwd, role, and
+      model. Creation options are invalid when attaching.
 
   result <worker-id>
       Print the absolute path to the latest valid durable result file.
@@ -88,8 +120,8 @@ COMMANDS
       List known workers and their current status.
 
   close <worker-id>
-      Mark a worker closed. This does not delete its history. A closed worker
-      remains available to result and status but rejects send.
+      Mark an idle worker closed. This does not delete its history. A closed
+      worker remains available to result and status but rejects send and tui.
 
 WORKER FILES
   ~/.glm/workers/<worker-id>/
@@ -100,6 +132,8 @@ WORKER FILES
       response.json
       stderr.log
       result.md
+      runner.log      # asynchronous headless turns
+      exit.meta       # TUI batches
 
 STATUS VALUES
   DONE      The worker produced a valid result ending in STATUS: DONE.
@@ -116,12 +150,16 @@ WORKER CONTRACT
   background process alone is not completion. The wrapper classifies missing
   or malformed results and invocation failures as INVALID.
 
+  RUNNING is a launch receipt, not task completion.
+  Stopping a parent Claude turn leaves a detached worker running.
+  Use cancel with its recorded worker ID when the GLM task itself should stop.
+
 ORCHESTRATOR WORKFLOW
-  1. glm-agent start "<task>"
-  2. Read RESULT and inspect the actual changes.
-  3. glm-agent send <worker-id> "<review feedback>" when correction is needed.
-  4. Repeat review and send until satisfactory.
-  5. glm-agent close <worker-id>
+  1. glm-agent start --async "<task>"
+  2. Record WORKER_ID, then use wait or status until terminal.
+  3. Read RESULT and inspect the actual changes.
+  4. glm-agent send --async <worker-id> "<review feedback>" when needed.
+  5. Use cancel to stop active work, or close after all turns are finished.
 
 ENVIRONMENT
   GLM_SYSTEM_PROMPT_FILE
@@ -528,6 +566,8 @@ prepare_turn() {
   active_set "$dir" turn "$turn"
   meta_set "$dir" turn "$turn"
   meta_set "$dir" status "RUNNING"
+  meta_set "$dir" error_kind ""
+  meta_set "$dir" provider_code ""
   printf '%s\n' "$turn"
 }
 
@@ -603,8 +643,7 @@ execute_headless_turn() {
   set -m
   (
     cd "$cwd"
-    export GLM_RESULT_FILE="$result_file"
-    run_glm_claude "${args[@]}" "$prompt"
+    GLM_RESULT_FILE="$result_file" run_glm_claude "${args[@]}" "$prompt"
   ) >"$response_file" 2>"$stderr_file" &
   provider_pid=$!
   provider_pgid="$(ps -o pgid= -p "$provider_pid" | tr -d ' ')"
@@ -730,9 +769,11 @@ launch_async_turn() {
   turn_dir="$dir/turns/$turn_label"
   result_file="$turn_dir/result.md"
 
+  set -m
   nohup "$SCRIPT_PATH" _execute-turn "$worker_id" "$turn" \
     </dev/null >"$turn_dir/runner.log" 2>&1 &
   runner_pid=$!
+  set +m
   chmod 600 "$turn_dir/runner.log"
   active_set "$dir" supervision "async"
   active_set "$dir" runner_pid "$runner_pid"
@@ -1043,8 +1084,7 @@ run_tui_batch() {
   started_at="$(date +%s)"
   (
     cd "$cwd"
-    export GLM_RESULT_FILE="$result_file"
-    run_glm_claude "${args[@]}"
+    GLM_RESULT_FILE="$result_file" run_glm_claude "${args[@]}"
   ) 2>"$stderr_file" || exit_code=$?
   chmod 600 "$stderr_file"
   (

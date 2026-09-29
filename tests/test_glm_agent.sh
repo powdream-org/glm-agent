@@ -331,7 +331,21 @@ assert_contains 'help documents role option' "$help_output" \
 assert_contains 'help documents explorer role' "$help_output" 'explorer'
 assert_contains 'help documents fallback signal' "$help_output" \
   'FALLBACK_RECOMMENDED'
-assert_eq 'version is available' 'glm-agent 0.3.0' "$($SCRIPT --version)"
+assert_contains 'help documents managed TUI' "$help_output" \
+  'glm-agent tui [--role <role>] [--model <alias>] [--cwd <directory>]'
+assert_contains 'help documents async start' "$help_output" \
+  'glm-agent start --async'
+assert_contains 'help documents async send' "$help_output" \
+  'glm-agent send --async <worker-id> <message>'
+assert_contains 'help documents bounded wait' "$help_output" \
+  'glm-agent wait [--timeout <seconds>] <worker-id>'
+assert_contains 'help documents cancellation' "$help_output" \
+  'glm-agent cancel <worker-id>'
+assert_contains 'help distinguishes launch from completion' "$help_output" \
+  'RUNNING is a launch receipt, not task completion.'
+assert_contains 'help distinguishes parent stop from worker cancel' "$help_output" \
+  'Stopping a parent Claude turn leaves a detached worker running.'
+assert_eq 'version is available' 'glm-agent 0.4.0' "$($SCRIPT --version)"
 
 secret='zai-test-secret-value'
 capture "$SCRIPT" api-key "$secret"
@@ -456,6 +470,26 @@ assert_contains 'exit-zero quota code is retained' "$OUTPUT" \
 assert_contains 'exit-zero quota error recommends fallback' "$OUTPUT" \
   'FALLBACK_RECOMMENDED=true'
 
+export FAKE_CLAUDE_BLOCK_STARTED="$TEST_ROOT/error-reset.started"
+export FAKE_CLAUDE_BLOCK_RELEASE="$TEST_ROOT/error-reset.release"
+capture "$SCRIPT" send --async "$worker_id" \
+  'WAIT_FOR_RELEASE clear prior error metadata'
+assert_eq 'async retry after failure starts' '0' "$RC"
+for _ in {1..500}; do
+  [[ -f "$FAKE_CLAUDE_BLOCK_STARTED" ]] && break
+  sleep 0.01
+done
+capture "$SCRIPT" wait --timeout 0 "$worker_id"
+assert_contains 'running retry clears prior error kind' "$OUTPUT" \
+  $'ERROR_KIND=\n'
+assert_not_contains 'running retry hides prior quota error' "$OUTPUT" \
+  'ERROR_KIND=quota-exhausted'
+: >"$FAKE_CLAUDE_BLOCK_RELEASE"
+capture "$SCRIPT" wait --timeout 5 "$worker_id"
+assert_eq 'async retry after failure completes' '0' "$RC"
+send_result="$("$SCRIPT" result "$worker_id")"
+unset FAKE_CLAUDE_BLOCK_STARTED FAKE_CLAUDE_BLOCK_RELEASE
+
 capture "$SCRIPT" start --cwd "$PROJECT" 'lock test worker'
 assert_eq 'lock test worker starts' '0' "$RC"
 lock_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
@@ -491,10 +525,12 @@ async_release="$TEST_ROOT/async.release"
 async_receipt="$TEST_ROOT/async.receipt"
 export FAKE_CLAUDE_BLOCK_STARTED="$async_started"
 export FAKE_CLAUDE_BLOCK_RELEASE="$async_release"
-if (
-  "$SCRIPT" start --async --role explorer --model haiku --cwd "$PROJECT" \
-    'WAIT_FOR_RELEASE async parent exit'
-) >"$async_receipt" 2>"$TEST_ROOT/async-start.err"; then
+if /opt/homebrew/bin/bash -c '
+  set -m
+  "$1" start --async --role explorer --model haiku --cwd "$2" \
+    "WAIT_FOR_RELEASE async orphaned launcher" >"$3"
+' _ "$SCRIPT" "$PROJECT" "$async_receipt" \
+  2>"$TEST_ROOT/async-start.err"; then
   async_start_rc=0
 else
   async_start_rc=$?
@@ -520,6 +556,24 @@ assert_eq 'status observes an async worker' '0' "$RC"
 assert_contains 'status reports active headless mode' "$OUTPUT" \
   'ACTIVE_MODE=headless'
 assert_contains 'status reports active turn' "$OUTPUT" 'ACTIVE_TURN=1'
+
+async_state="$GLM_AGENT_HOME/workers/$async_worker_id/active/state"
+async_runner_pid="$(sed -n 's/^runner_pid=//p' "$async_state")"
+async_runner_pgid="$(ps -o pgid= -p "$async_runner_pid" | tr -d ' ')"
+assert_eq 'async runner leads its own process group' "$async_runner_pid" \
+  "$async_runner_pgid"
+for _ in {1..100}; do
+  if ! kill -0 "$async_runner_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.01
+done
+if kill -0 "$async_runner_pid" 2>/dev/null; then
+  pass 'recorded async runner remains alive while provider runs'
+else
+  fail 'recorded async runner remains alive while provider runs' \
+    "runner $async_runner_pid exited before provider completion"
+fi
 
 capture "$SCRIPT" wait --timeout 0 "$async_worker_id"
 assert_eq 'zero-timeout wait is a successful observation' '0' "$RC"
@@ -587,7 +641,6 @@ fi
 capture "$SCRIPT" cancel "$cancel_worker_id"
 cancel_rc="$RC"
 cancel_output="$OUTPUT"
-cancel_stderr="$STDERR"
 if ((cancel_rc != 0)); then
   : >"$cancel_release"
 fi

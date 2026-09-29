@@ -6,7 +6,9 @@ through Claude Code and Z.ai's Anthropic-compatible API.
 It is designed for an orchestrator that needs compact control-plane output while
 keeping each worker's prompts, durable reports, raw Claude responses, and stderr
 on disk. A worker keeps the same Claude session, working directory, and model
-across `start` and later `send` calls.
+across `start`, later `send` calls, and managed native Claude Code TUI
+attachments. Headless turns may run synchronously or as detached operations
+that remain recoverable by worker ID.
 
 ## Requirements
 
@@ -104,6 +106,60 @@ When no more turns are needed, close the worker without deleting its history:
 glm-agent close 20260928T032843Z-15896-30630
 ```
 
+## Asynchronous orchestration
+
+Launch a worker without holding the bridge agent open:
+
+```bash
+glm-agent start --async --role explorer --model haiku --cwd /path/to/project \
+  "Trace the dependency path and write a verified report."
+```
+
+`STATUS=RUNNING` is a launch receipt, not task completion. Record the returned
+`WORKER_ID`, then observe it with a bounded wait:
+
+```bash
+glm-agent wait --timeout 20 <worker-id>
+glm-agent status <worker-id>
+```
+
+`WAIT_RESULT=TIMEOUT` leaves the worker running. `DONE` or `BLOCKED` is semantic
+completion and requires inspecting `RESULT` plus the actual repository state.
+Resume the same session asynchronously with:
+
+```bash
+glm-agent send --async <worker-id> "Apply the review feedback and rerun tests."
+```
+
+Stop an active asynchronous turn explicitly:
+
+```bash
+glm-agent cancel <worker-id>
+```
+
+Stopping the parent Claude Code turn does not cancel a detached GLM worker.
+The parent or a later bridge uses the recorded worker ID to wait, inspect,
+continue, or cancel it. Cancellation signals the managed provider process group,
+preserves partial artifacts, and records `INVALID/interrupted`.
+
+## Managed Claude Code TUI
+
+Open a new Z.ai-backed native Claude Code TUI as a managed worker:
+
+```bash
+glm-agent tui --role general-purpose --model sonnet --cwd /path/to/project
+```
+
+Re-enter the exact stored session later:
+
+```bash
+glm-agent tui <worker-id>
+```
+
+Attach always uses the worker's stored cwd, role, model, and Claude session,
+independent of the caller's cwd. Each open/close interval creates a TUI batch
+with `mode`, `prompt.md`, `stderr.log`, `result.md`, and `exit.meta` artifacts.
+
 ## Commands
 
 | Command | Purpose |
@@ -111,7 +167,13 @@ glm-agent close 20260928T032843Z-15896-30630
 | `api-key [key]` | Store a Z.ai API key, or prompt for it securely. |
 | `run <prompt>` | Run a one-shot diagnostic session without creating a worker. |
 | `start [--role <role>] [--model <alias>] [--cwd <dir>] <task>` | Create a persistent worker and execute turn 1. |
+| `start --async ... <task>` | Create a worker and return its RUNNING receipt before provider completion. |
 | `send <worker-id> <message>` | Resume the worker's original session, directory, role, and model. |
+| `send --async <worker-id> <message>` | Resume the same session in a detached turn. |
+| `wait [--timeout <seconds>] <worker-id>` | Wait up to 0–300 seconds for terminal state. |
+| `cancel <worker-id>` | Interrupt an active asynchronous headless turn. |
+| `tui [creation options]` | Create a managed worker and open native Claude Code. |
+| `tui <worker-id>` | Attach to the worker's stored TUI session and cwd. |
 | `result <worker-id>` | Print the latest valid durable result path. |
 | `status <worker-id>` | Print compact worker state without exposing the session ID. |
 | `list` | List known workers. |
@@ -134,7 +196,8 @@ values stored when the worker was created.
 - Either agent can start an Opus, Sonnet, or Haiku logical worker when the
   delegation prompt specifies `GLM_MODEL`.
 - A routed turn is confirmed by its returned `WORKER_ID`, `TURN`, `STATUS`, and
-  `RESULT`, together with the worker directory and durable result on disk.
+  `RESULT`. `RUNNING` confirms routing; terminal `DONE|BLOCKED` and the durable
+  result confirm semantic completion.
 - A `DONE` or `BLOCKED` turn does not close the worker. Continue it with the
   same bridge agent or its `WORKER_ID`; close it only by explicit request.
 
@@ -176,6 +239,7 @@ meta
 task.md
 turns/
   0001/
+    mode
     prompt.md
     response.json
     stderr.log
@@ -190,6 +254,9 @@ turn data.
 The wrapper stores the selected role and the latest provider classification in
 `meta`. Raw response and stderr remain on disk; compact stdout never includes
 the Claude session ID.
+
+Asynchronous headless turns also contain `runner.log`. TUI batches contain
+`exit.meta` and omit the headless-only `response.json`.
 
 ## Z.ai and Claude Code configuration
 

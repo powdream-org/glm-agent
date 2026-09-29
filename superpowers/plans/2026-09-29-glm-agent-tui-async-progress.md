@@ -37,3 +37,8 @@
 - Task 5: Ruling: skill pressure RED는 User가 제시한 실제 실패 보고(bridge가 GLM worker를 호출하지 않고 TASK를 직접 수행)를 사용하고 별도 agent 좌석은 만들지 않는다 — native inline 실행 선택과 실제 관측이 이미 baseline을 제공한다 — 잘못되면 새 문구의 해석 실패를 Task 6 live smoke에서야 발견한다.
 - Task 5: `my-superpowers` canonical을 `/Users/h_kang/.agents/skills/my-superpowers/SKILL.md`로 옮기고 `/Users/h_kang/.claude/skills/my-superpowers`를 symlink로 연결했다. SHA-256 `a424d07e47210d8ce9bfb6c1bc36a97ef05ef7b53acc2e52277af85ba1b82e81`.
 - Task 5: complete — `bash tests/test_plugin.sh && claude plugin validate --strict .` → 52/52 pass, strict validation passed; Claude/Codex skill 경로 `cmp` 일치.
+- Task 6: RED — help/version 계약은 CLI 8개, plugin 6개 실패. 0.4.0 help·README·manifest 갱신 후 정적/동적 gate를 통과했다.
+- Task 6: live async smoke에서 provider가 정상 결과를 쓴 뒤 detached supervisor만 먼저 사라지는 문제를 발견했다. Ruling: async launcher가 supervisor를 자체 process-group leader로 시작한다 — launcher의 orphaned job-control group을 상속하면 내부 provider group을 기다리는 supervisor가 종료될 수 있다 — 잘못되면 OS별 job-control 차이로 runner PGID assertion이 불안정할 수 있다. 별도 launcher group 회귀 테스트를 추가했고 runner PID=PGID 및 실제 async terminal `DONE`을 확인했다.
+- Task 6: live managed TUI를 다른 caller cwd에서 같은 worker에 attach하고 `/exit`했다. 새 TUI batch는 report를 작성하지 않아 계약대로 `INVALID/worker-protocol`이었고, 이어진 async headless turn 3이 저장 session/cwd/model로 `DONE`을 반환했다.
+- Task 6: live resume 중 `RUNNING` observation이 직전 TUI error metadata를 노출하는 문제를 발견했다. 새 turn 준비 시 `error_kind`와 `provider_code`를 지우도록 TDD로 수정했다.
+- Task 6: complete — `bash -n`, ShellCheck, CLI 326/326, plugin 57/57, `claude plugin validate --strict .` 모두 통과. CLI/plugin/marketplace version은 0.4.0.

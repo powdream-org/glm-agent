@@ -76,6 +76,15 @@ assert_contains 'README documents general agent' "$readme" \
   'glm-agent:general-purpose'
 assert_contains 'README documents native connector routing' "$readme" \
   'connector/MCP'
+assert_contains 'README documents managed TUI' "$readme" 'glm-agent tui'
+assert_contains 'README documents async start' "$readme" \
+  'glm-agent start --async'
+assert_contains 'README documents bounded wait' "$readme" \
+  'glm-agent wait --timeout'
+assert_contains 'README documents cancellation' "$readme" \
+  'glm-agent cancel'
+assert_contains 'README distinguishes parent stop from cancel' "$readme" \
+  'Stopping the parent Claude Code turn does not cancel'
 
 if [[ -f "$plugin_json" ]]; then
   assert_eq 'plugin name' 'glm-agent' "$(jq -r '.name' "$plugin_json")"
@@ -95,7 +104,7 @@ if [[ -f "$plugin_json" && -f "$marketplace_json" ]]; then
   assert_eq 'CLI and plugin versions match' "$cli_version" "$plugin_version"
   assert_eq 'CLI and marketplace versions match' "$cli_version" \
     "$marketplace_version"
-  assert_eq 'release version is 0.3.0' '0.3.0' "$cli_version"
+  assert_eq 'release version is 0.4.0' '0.4.0' "$cli_version"
 fi
 if [[ -f "$explorer_agent" ]]; then
   explorer_content="$(cat "$explorer_agent")"
@@ -122,11 +131,11 @@ if [[ -f "$explorer_agent" ]]; then
   assert_contains 'explorer starts workers asynchronously' "$explorer_flat" \
     'start --async --role explorer'
   assert_contains 'explorer sends turns asynchronously' "$explorer_flat" \
-    'send --async "$WORKER_ID" "$TASK"'
+    "send --async \"\$WORKER_ID\" \"\$TASK\""
   assert_contains 'explorer waits with a bounded timeout' "$explorer_flat" \
-    'wait --timeout 20 "$WORKER_ID"'
+    "wait --timeout 20 \"\$WORKER_ID\""
   assert_contains 'explorer routes cancellation' "$explorer_flat" \
-    'cancel "$WORKER_ID"'
+    "cancel \"\$WORKER_ID\""
   assert_contains 'explorer defines launch completion' "$explorer_flat" \
     'start and send reach their destination when the CLI returns WORKER_ID, TURN, and STATUS=RUNNING.'
   assert_contains 'explorer distinguishes semantic completion' "$explorer_flat" \
@@ -200,11 +209,11 @@ if [[ -f "$general_agent" ]]; then
   assert_contains 'general agent starts workers asynchronously' "$general_flat" \
     'start --async --role general-purpose'
   assert_contains 'general agent sends turns asynchronously' "$general_flat" \
-    'send --async "$WORKER_ID" "$TASK"'
+    "send --async \"\$WORKER_ID\" \"\$TASK\""
   assert_contains 'general agent waits with a bounded timeout' "$general_flat" \
-    'wait --timeout 20 "$WORKER_ID"'
+    "wait --timeout 20 \"\$WORKER_ID\""
   assert_contains 'general agent routes cancellation' "$general_flat" \
-    'cancel "$WORKER_ID"'
+    "cancel \"\$WORKER_ID\""
   assert_contains 'general agent defines launch completion' "$general_flat" \
     'start and send reach their destination when the CLI returns WORKER_ID, TURN, and STATUS=RUNNING.'
   assert_contains 'general agent distinguishes semantic completion' "$general_flat" \

@@ -225,9 +225,12 @@ nohup glm-agent _execute-turn WORKER_ID TURN \
 The wrapper records the returned PID before emitting the control-plane
 receipt. All three standard streams are disconnected from the invoking Bash
 tool, and `nohup` protects the runner from the normal hangup caused when that
-tool or its parent `claude -p` exits. The custom agent therefore invokes only
-`glm-agent start --async` or `glm-agent send --async`; it does not background a
-foreground `glm-agent` or `claude -p` command itself.
+tool or its parent `claude -p` exits. The launcher also starts the runner as
+the leader of its own process group. This keeps the supervisor out of the
+launcher's orphaned job-control group while it waits for the provider. The
+custom agent therefore invokes only `glm-agent start --async` or
+`glm-agent send --async`; it does not background a foreground `glm-agent` or
+`claude -p` command itself.
 
 The detached runner receives only worker ID and turn number on its command
 line. The task body is read from the already-private `prompt.md`, keeping long
@@ -390,6 +393,8 @@ insufficient evidence for automatic fallback.
 - A terminated bounded `wait` loses no worker identity or state.
 - A runner that reaches a provider error persists terminal metadata before
   exiting.
+- Preparing a later turn clears the previous error classification when the
+  worker enters `RUNNING`, so bounded observations describe the active turn.
 - A runner killed before finalization leaves a detectable stale lock and
   `RUNNING` turn; the next `status` or `wait` finalizes it as interrupted rather
   than claiming completion.
@@ -423,7 +428,8 @@ Hermetic fake-Claude tests cover:
 - async start returning `RUNNING` before fake Claude completes;
 - async send preserving the original session, cwd, role, and model;
 - detached runner survival after its launching shell and parent bridge exit,
-  with stdin closed and every output stream redirected;
+  with stdin closed, every output stream redirected, and the runner leading
+  its own process group;
 - regression rejection of an implementation that merely appends `&` while
   leaving inherited bridge pipes open;
 - one-active-operation lock enforcement and stale-lock recovery;
@@ -435,6 +441,7 @@ Hermetic fake-Claude tests cover:
 - PID/PGID identity revalidation and repeated-cancel idempotency;
 - close rejection while active and history preservation afterward;
 - quota classification for non-zero exits and exit-zero error JSON;
+- previous terminal error metadata cleared before an async retry is observed;
 - API key and session ID non-disclosure in every control response;
 - synchronous start/send regression coverage.
 
