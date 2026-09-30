@@ -53,8 +53,12 @@ ACTION=start and send reach their destination when the CLI returns WORKER_ID,
 TURN, and STATUS=RUNNING. Semantic completion comes from a later wait or status
 response with STATUS=DONE or STATUS=BLOCKED. WAIT_RESULT=TIMEOUT routes the
 current RUNNING receipt back to the parent for another bounded observation.
-ACTION=cancel reaches completion when the CLI returns a terminal status and
-CANCEL_RESULT.
+ACTION=cancel reaches completion only when the CLI returns a terminal STATUS
+(DONE, BLOCKED, or INVALID) together with CANCEL_RESULT=CANCELLED or
+CANCEL_RESULT=ALREADY_TERMINAL. CANCEL_RESULT=PENDING pairs with a
+non-terminal STATUS and means the worker has not yet settled — route it back
+to the parent for another bounded wait or a repeated cancel, the same as
+WAIT_RESULT=TIMEOUT.
 
 The parent verifies explorer findings, RESULT, and the project diff. Keep the
 worker available after DONE or BLOCKED and close it for ACTION=close. A terminal

@@ -210,7 +210,9 @@ provider-group startup without applying to a replacement turn.
 - `cancel` applies to an asynchronous headless lock and preserves its partial
   artifacts.
 - `status` reports `ACTIVE_MODE=headless|tui` and `ACTIVE_TURN` while running.
-- The per-turn runner removes its lock through an exit trap.
+- Normal turn finalization removes the lock. If a runner disappears before
+  finalization, a later lifecycle command atomically claims stale recovery,
+  records an interrupted terminal state, and releases the matching generation.
 - A lock whose recorded process is gone is finalized as `STATUS=INVALID` with
   `ERROR_KIND=interrupted`; its artifacts remain and the worker becomes
   available for a later turn.

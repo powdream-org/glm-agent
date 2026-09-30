@@ -166,7 +166,26 @@ fi
 
 if [[ "$prompt" == *EXIT_ZERO_RESULT_ERROR* ]]; then
   printf '%s\n' \
-    '{"type":"result","subtype":"success","is_error":false,"session_id":"session-1","result":"Z.ai quota error: code 1113 quota exhausted"}'
+    '{"type":"result","session_id":"session-1","result":"Z.ai quota error: code 1113 quota exhausted"}'
+  exit 0
+fi
+
+if [[ "$prompt" == *EXIT_ZERO_BARE_FAILED_ERROR* ]]; then
+  printf '%s\n' \
+    '{"type":"result","session_id":"session-1","result":"provider failed with code 1305"}'
+  exit 0
+fi
+
+if [[ "$prompt" == *UNRELATED_NUMBER_NO_ERROR* ]]; then
+  printf '# Summary\nCompleted by fake worker\n\nSTATUS: DONE\n' >"$GLM_RESULT_FILE"
+  printf '%s\n' \
+    '{"type":"result","session_id":"session-1","result":"unrelated text mentioning 10010 only"}'
+  exit 0
+fi
+
+if [[ "$prompt" == *EXIT_ZERO_BRACKET_QUOTA_ERROR* ]]; then
+  printf '%s\n' \
+    '{"type":"result","session_id":"session-1","result":"API Error: Request rejected (429) · [1308][Usage limit reached for 5 hour. Your limit will reset at ...][...]"}'
   exit 0
 fi
 
@@ -195,21 +214,37 @@ if [[ "$prompt" == *WAIT_FOR_RELEASE* ]]; then
 fi
 
 if [[ "$prompt" == *HANG_WITH_CHILD* ]]; then
-  sleep 60 &
+  if [[ "$prompt" == *HANG_WITH_TERM_IGNORING_CHILD* ]]; then
+    /bin/bash -c 'trap "" TERM; while :; do sleep 1; done' &
+  else
+    sleep 60 &
+  fi
   fake_child_pid=$!
   printf '%s\n' "$fake_child_pid" >"$FAKE_CLAUDE_CHILD_PID_FILE"
   ps -o pgid= -p "$$" | tr -d ' ' >"$FAKE_CLAUDE_PROVIDER_PGID_FILE"
   : >"$FAKE_CLAUDE_HANG_STARTED"
   cleanup_fake_child() {
-    kill "$fake_child_pid" 2>/dev/null || true
+    kill -KILL "$fake_child_pid" 2>/dev/null || true
     wait "$fake_child_pid" 2>/dev/null || true
   }
-  trap cleanup_fake_child EXIT
+  if [[ "$prompt" != *HANG_WITH_TERM_IGNORING_CHILD* ]]; then
+    trap cleanup_fake_child EXIT
+  fi
   for _ in {1..1000}; do
     [[ -f "$FAKE_CLAUDE_HANG_RELEASE" ]] && break
     sleep 0.01
   done
   [[ -f "$FAKE_CLAUDE_HANG_RELEASE" ]] || exit 19
+fi
+
+if [[ "$prompt" == *ERROR_WITH_TERM_IGNORING_CHILD* ]]; then
+  /bin/bash -c 'trap "" TERM; while :; do sleep 1; done' &
+  error_child_pid=$!
+  printf '%s\n' "$error_child_pid" >"$FAKE_CLAUDE_CHILD_PID_FILE"
+  ps -o pgid= -p "$$" | tr -d ' ' >"$FAKE_CLAUDE_PROVIDER_PGID_FILE"
+  printf '%s\n' \
+    '{"type":"result","session_id":"session-1","result":"Z.ai quota error: code 1113 quota exhausted"}'
+  exit 0
 fi
 
 case "$prompt" in
@@ -225,6 +260,21 @@ case "$prompt" in
     printf '# Summary\nCompleted by fake worker\n\nSTATUS: DONE\n' >"$GLM_RESULT_FILE"
     ;;
 esac
+
+if [[ "$prompt" == *FIXED_ERROR_CODE_REPORT* ]]; then
+  printf '%s\n' \
+    '{"type":"result","subtype":"success","is_error":false,"session_id":"session-1","result":"Fixed Z.ai authentication code 1001 and tests pass"}'
+  exit 0
+fi
+
+if [[ "$prompt" == *PERSISTENT_BACKGROUND_CHILD* ]]; then
+  /usr/bin/nohup /bin/bash -c 'trap "" TERM; while :; do sleep 1; done' \
+    >/dev/null 2>&1 &
+  persistent_child_pid=$!
+  printf '%s\n' "$persistent_child_pid" >"$FAKE_CLAUDE_CHILD_PID_FILE"
+  ps -o pgid= -p "$persistent_child_pid" | tr -d ' ' \
+    >"$FAKE_CLAUDE_PROVIDER_PGID_FILE"
+fi
 
 if [[ "$prompt" == *BAD_JSON* ]]; then
   printf '%s\n' 'not-json'
@@ -343,6 +393,13 @@ meta_get_test() {
 process_start_test() {
   ps -o lstart= -p "$1" 2>/dev/null | sed -e 's/^[[:space:]]*//' \
     -e 's/[[:space:]]*$//'
+}
+
+process_is_running_test() {
+  local state
+
+  state="$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')"
+  [[ -n "$state" && "$state" != Z* ]]
 }
 
 help_output="$($SCRIPT --help)"
@@ -514,6 +571,74 @@ assert_contains 'result-text quota is classified' "$OUTPUT" \
 assert_contains 'result-text provider code is retained' "$OUTPUT" \
   'PROVIDER_CODE=1113'
 
+capture "$SCRIPT" send "$worker_id" 'EXIT_ZERO_BARE_FAILED_ERROR'
+assert_eq 'unstructured bare failed error fails the turn' '1' "$RC"
+assert_contains 'unstructured bare failed error is classified' "$OUTPUT" \
+  'ERROR_KIND=provider-transient'
+assert_contains 'unstructured bare failed error code is retained' "$OUTPUT" \
+  'PROVIDER_CODE=1305'
+
+capture "$SCRIPT" send "$worker_id" 'UNRELATED_NUMBER_NO_ERROR'
+assert_eq 'unrelated number without error keywords succeeds' '0' "$RC"
+assert_contains 'unrelated number without error keywords reaches DONE' "$OUTPUT" \
+  'STATUS=DONE'
+
+capture "$SCRIPT" send "$worker_id" 'EXIT_ZERO_BRACKET_QUOTA_ERROR'
+assert_eq 'bracket-format Z.ai quota error fails the turn' '1' "$RC"
+assert_contains 'bracket-format quota code is extracted' "$OUTPUT" \
+  'PROVIDER_CODE=1308'
+assert_contains 'bracket-format quota error is classified' "$OUTPUT" \
+  'ERROR_KIND=quota-exhausted'
+assert_contains 'bracket-format quota error recommends fallback' "$OUTPUT" \
+  'FALLBACK_RECOMMENDED=true'
+
+export FAKE_CLAUDE_CHILD_PID_FILE="$TEST_ROOT/error-path.child.pid"
+export FAKE_CLAUDE_PROVIDER_PGID_FILE="$TEST_ROOT/error-path.provider.pgid"
+capture "$SCRIPT" send "$worker_id" 'ERROR_WITH_TERM_IGNORING_CHILD'
+assert_eq 'provider error path fails the turn' '1' "$RC"
+assert_contains 'provider error path is classified quota-exhausted' "$OUTPUT" \
+  'ERROR_KIND=quota-exhausted'
+error_path_child_pid="$(cat "$FAKE_CLAUDE_CHILD_PID_FILE" 2>/dev/null || true)"
+if [[ "$error_path_child_pid" =~ ^[0-9]+$ ]]; then
+  pass 'provider error path recorded a background child'
+else
+  fail 'provider error path recorded a background child' \
+    'no child pid was recorded'
+fi
+for _ in {1..300}; do
+  if ! process_is_running_test "$error_path_child_pid"; then
+    break
+  fi
+  sleep 0.01
+done
+if ! process_is_running_test "$error_path_child_pid"; then
+  pass 'a pure provider-error turn still drains its TERM-ignoring child'
+else
+  fail 'a pure provider-error turn still drains its TERM-ignoring child' \
+    "child $error_path_child_pid is still alive"
+fi
+unset FAKE_CLAUDE_CHILD_PID_FILE FAKE_CLAUDE_PROVIDER_PGID_FILE
+
+capture "$SCRIPT" send "$worker_id" 'FIXED_ERROR_CODE_REPORT'
+assert_eq 'successful error-code report stays successful' '0' "$RC"
+assert_contains 'successful error-code report reaches DONE' "$OUTPUT" \
+  'STATUS=DONE'
+
+export FAKE_CLAUDE_CHILD_PID_FILE="$TEST_ROOT/persistent.child.pid"
+export FAKE_CLAUDE_PROVIDER_PGID_FILE="$TEST_ROOT/persistent.provider.pgid"
+capture "$SCRIPT" send "$worker_id" 'PERSISTENT_BACKGROUND_CHILD'
+assert_eq 'successful persistent background turn completes' '0' "$RC"
+persistent_child_pid="$(cat "$FAKE_CLAUDE_CHILD_PID_FILE")"
+persistent_provider_pgid="$(cat "$FAKE_CLAUDE_PROVIDER_PGID_FILE")"
+if process_is_running_test "$persistent_child_pid"; then
+  pass 'successful turn preserves its verified background process'
+else
+  fail 'successful turn preserves its verified background process' \
+    "background child was stopped: $persistent_child_pid"
+fi
+kill -KILL -- "-$persistent_provider_pgid" 2>/dev/null || true
+unset FAKE_CLAUDE_CHILD_PID_FILE FAKE_CLAUDE_PROVIDER_PGID_FILE
+
 export FAKE_CLAUDE_BLOCK_STARTED="$TEST_ROOT/error-reset.started"
 export FAKE_CLAUDE_BLOCK_RELEASE="$TEST_ROOT/error-reset.release"
 capture "$SCRIPT" send --async "$worker_id" \
@@ -572,7 +697,8 @@ export FAKE_CLAUDE_HANG_STARTED="$sync_interrupt_started"
 export FAKE_CLAUDE_HANG_RELEASE="$sync_interrupt_release"
 export FAKE_CLAUDE_CHILD_PID_FILE="$sync_interrupt_child_file"
 export FAKE_CLAUDE_PROVIDER_PGID_FILE="$sync_interrupt_pgid_file"
-"$SCRIPT" start --cwd "$PROJECT" 'HANG_WITH_CHILD sync interruption' \
+"$SCRIPT" start --cwd "$PROJECT" \
+  'HANG_WITH_CHILD HANG_WITH_TERM_IGNORING_CHILD sync interruption' \
   >"$TEST_ROOT/sync-interrupt.out" 2>"$TEST_ROOT/sync-interrupt.err" &
 sync_wrapper_pid=$!
 for _ in {1..500}; do
@@ -581,13 +707,13 @@ for _ in {1..500}; do
 done
 sync_child_pid="$(cat "$sync_interrupt_child_file" 2>/dev/null || true)"
 kill -TERM "$sync_wrapper_pid" 2>/dev/null || true
-for _ in {1..100}; do
-  if [[ -z "$sync_child_pid" ]] || ! kill -0 "$sync_child_pid" 2>/dev/null; then
+for _ in {1..300}; do
+  if [[ -z "$sync_child_pid" ]] || ! process_is_running_test "$sync_child_pid"; then
     break
   fi
   sleep 0.01
 done
-if [[ -n "$sync_child_pid" ]] && ! kill -0 "$sync_child_pid" 2>/dev/null; then
+if [[ -n "$sync_child_pid" ]] && ! process_is_running_test "$sync_child_pid"; then
   pass 'sync interruption terminates provider child processes'
 else
   fail 'sync interruption terminates provider child processes' \
@@ -702,7 +828,8 @@ export FAKE_CLAUDE_HANG_STARTED="$cancel_started"
 export FAKE_CLAUDE_HANG_RELEASE="$cancel_release"
 export FAKE_CLAUDE_CHILD_PID_FILE="$cancel_child_pid_file"
 export FAKE_CLAUDE_PROVIDER_PGID_FILE="$cancel_provider_pgid_file"
-capture "$SCRIPT" start --async --cwd "$PROJECT" 'HANG_WITH_CHILD cancel me'
+capture "$SCRIPT" start --async --cwd "$PROJECT" \
+  'HANG_WITH_CHILD HANG_WITH_TERM_IGNORING_CHILD cancel me'
 assert_eq 'cancel test async worker starts' '0' "$RC"
 cancel_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
 for _ in {1..500}; do
@@ -729,13 +856,13 @@ assert_contains 'cancel classifies interruption' "$cancel_output" \
   'ERROR_KIND=interrupted'
 assert_contains 'cancel reports cancellation result' "$cancel_output" \
   'CANCEL_RESULT=CANCELLED'
-for _ in {1..100}; do
-  if ! kill -0 "$cancel_child_pid" 2>/dev/null; then
+for _ in {1..300}; do
+  if ! process_is_running_test "$cancel_child_pid"; then
     break
   fi
   sleep 0.01
 done
-if ! kill -0 "$cancel_child_pid" 2>/dev/null; then
+if ! process_is_running_test "$cancel_child_pid"; then
   pass 'cancel terminates provider child processes'
 else
   fail 'cancel terminates provider child processes' \
@@ -800,6 +927,77 @@ assert_contains 'natural terminal state is preserved on cancel' "$OUTPUT" \
   'STATUS=DONE'
 assert_contains 'completed cancel reports already terminal' "$OUTPUT" \
   'CANCEL_RESULT=ALREADY_TERMINAL'
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'cancel replacement race fixture'
+assert_eq 'cancel replacement race fixture starts' '0' "$RC"
+cancel_race_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+cancel_race_dir="$GLM_AGENT_HOME/workers/$cancel_race_worker_id"
+sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
+  "$cancel_race_dir/meta" >"$cancel_race_dir/meta.next"
+mv "$cancel_race_dir/meta.next" "$cancel_race_dir/meta"
+mkdir "$cancel_race_dir/turns/0002"
+printf 'headless\n' >"$cancel_race_dir/turns/0002/mode"
+printf 'cancel race decoy turn\n' >"$cancel_race_dir/turns/0002/prompt.md"
+/bin/bash -c 'trap "" TERM; while :; do sleep 1; done' \
+  _ "_execute-turn $cancel_race_worker_id 2" &
+cancel_race_decoy_pid=$!
+mkdir "$cancel_race_dir/active"
+cat >"$cancel_race_dir/active/state" <<EOF
+generation=cancel-race-gen-1
+mode=headless
+turn=2
+supervision=async
+runner_pid=$cancel_race_decoy_pid
+runner_start=$(process_start_test "$cancel_race_decoy_pid")
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=$(date +%s)
+EOF
+(
+  sleep 0.3
+  rm -f "$cancel_race_dir/active/state" "$cancel_race_dir/active/cancel.requested" \
+    "$cancel_race_dir/active/launch.ready"
+  rmdir "$cancel_race_dir/active" 2>/dev/null || true
+  mkdir "$cancel_race_dir/turns/0003"
+  printf 'headless\n' >"$cancel_race_dir/turns/0003/mode"
+  printf 'replacement turn started mid-cancel\n' >"$cancel_race_dir/turns/0003/prompt.md"
+  mkdir "$cancel_race_dir/active"
+  cat >"$cancel_race_dir/active/state" <<EOF2
+generation=cancel-race-gen-2
+mode=headless
+turn=3
+supervision=async
+runner_pid=$$
+runner_start=$(process_start_test "$$")
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=$(date +%s)
+EOF2
+) &
+cancel_race_replacement_pid=$!
+if cancel_race_output="$(gtimeout 10 "$SCRIPT" cancel "$cancel_race_worker_id" \
+  2>"$TEST_ROOT/cancel-race.err")"; then
+  cancel_race_rc=0
+else
+  cancel_race_rc=$?
+fi
+wait "$cancel_race_replacement_pid" 2>/dev/null || true
+kill -KILL "$cancel_race_decoy_pid" 2>/dev/null || true
+wait "$cancel_race_decoy_pid" 2>/dev/null || true
+assert_eq 'cancel with a replacement race does not crash' '0' "$cancel_race_rc"
+if [[ "$cancel_race_output" == *'STATUS=RUNNING'* &&
+   "$cancel_race_output" == *'CANCEL_RESULT=CANCELLED'* ]]; then
+  fail 'cancel never reports RUNNING and CANCELLED together' \
+    "$cancel_race_output"
+else
+  pass 'cancel never reports RUNNING and CANCELLED together'
+fi
+assert_not_contains 'cancel replacement race final status is not falsely cancelled' \
+  "$cancel_race_output" 'CANCEL_RESULT=CANCELLED'
+rm -f "$cancel_race_dir/active/state"
+rmdir "$cancel_race_dir/active" 2>/dev/null || true
 
 capture "$SCRIPT" start --cwd "$PROJECT" 'pre-provider cancel fixture'
 assert_eq 'pre-provider cancel fixture starts' '0' "$RC"
@@ -1009,6 +1207,129 @@ else
   fail 'stale recovery releases the worker lock' 'active directory remains'
 fi
 
+capture "$SCRIPT" start --cwd "$PROJECT" 'concurrent finalizer worker'
+finalizer_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+finalizer_dir="$GLM_AGENT_HOME/workers/$finalizer_worker_id"
+mkdir "$finalizer_dir/active"
+cat >"$finalizer_dir/active/state" <<EOF
+generation=old-finalizer-generation
+mode=headless
+turn=2
+supervision=async
+runner_pid=99999998
+runner_start=stale-process-start
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=1
+EOF
+mkdir "$finalizer_dir/active/finalizing"
+cat >"$finalizer_dir/active/finalizing/owner" <<EOF
+pid=99999997
+start=stale-finalizer-start
+EOF
+sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
+  "$finalizer_dir/meta" >"$finalizer_dir/meta.next"
+mv "$finalizer_dir/meta.next" "$finalizer_dir/meta"
+export FAKE_CLAUDE_BLOCK_STARTED="$TEST_ROOT/finalizer.started"
+export FAKE_CLAUDE_BLOCK_RELEASE="$TEST_ROOT/finalizer.release"
+"$SCRIPT" status "$finalizer_worker_id" \
+  >"$TEST_ROOT/finalizer-status-one.out" 2>&1 &
+finalizer_status_one_pid=$!
+"$SCRIPT" status "$finalizer_worker_id" \
+  >"$TEST_ROOT/finalizer-status-two.out" 2>&1 &
+finalizer_status_two_pid=$!
+(
+  for _ in {1..500}; do
+    if "$SCRIPT" send --async "$finalizer_worker_id" \
+      'WAIT_FOR_RELEASE replacement generation' \
+      >"$TEST_ROOT/finalizer-replacement.out" \
+      2>"$TEST_ROOT/finalizer-replacement.err"; then
+      exit 0
+    fi
+    sleep 0.01
+  done
+  exit 1
+) &
+finalizer_replacement_pid=$!
+wait "$finalizer_status_one_pid" || true
+wait "$finalizer_status_two_pid" || true
+if wait "$finalizer_replacement_pid"; then
+  pass 'replacement turn starts after concurrent stale finalizers'
+else
+  fail 'replacement turn starts after concurrent stale finalizers' \
+    "$(cat "$TEST_ROOT/finalizer-replacement.err")"
+fi
+for _ in {1..500}; do
+  [[ -f "$FAKE_CLAUDE_BLOCK_STARTED" ]] && break
+  sleep 0.01
+done
+capture "$SCRIPT" status "$finalizer_worker_id"
+assert_contains 'replacement generation remains active' "$OUTPUT" 'STATUS=RUNNING'
+if [[ "$(sed -n 's/^generation=//p' "$finalizer_dir/active/state" 2>/dev/null)" != \
+  'old-finalizer-generation' ]]; then
+  pass 'stale finalizers cannot remove the replacement generation'
+else
+  fail 'stale finalizers cannot remove the replacement generation' \
+    'old generation still owns the worker'
+fi
+: >"$FAKE_CLAUDE_BLOCK_RELEASE"
+capture "$SCRIPT" wait --timeout 5 "$finalizer_worker_id"
+assert_contains 'replacement generation reaches terminal state' "$OUTPUT" \
+  'STATUS=DONE'
+assert_contains 'replacement generation meta turn survives concurrent stale finalizers' \
+  "$OUTPUT" 'TURN=3'
+assert_file 'replacement generation turn directory is the real turn' \
+  "$finalizer_dir/turns/0003/result.md"
+unset FAKE_CLAUDE_BLOCK_STARTED FAKE_CLAUDE_BLOCK_RELEASE
+
+orphan_finalize_started="$TEST_ROOT/orphan-finalize.started"
+orphan_finalize_release="$TEST_ROOT/orphan-finalize.release"
+orphan_finalize_child_pid_file="$TEST_ROOT/orphan-finalize.child.pid"
+orphan_finalize_provider_pgid_file="$TEST_ROOT/orphan-finalize.provider.pgid"
+export FAKE_CLAUDE_HANG_STARTED="$orphan_finalize_started"
+export FAKE_CLAUDE_HANG_RELEASE="$orphan_finalize_release"
+export FAKE_CLAUDE_CHILD_PID_FILE="$orphan_finalize_child_pid_file"
+export FAKE_CLAUDE_PROVIDER_PGID_FILE="$orphan_finalize_provider_pgid_file"
+capture "$SCRIPT" start --async --cwd "$PROJECT" \
+  'HANG_WITH_CHILD HANG_WITH_TERM_IGNORING_CHILD orphan finalize me'
+assert_eq 'orphan finalize test async worker starts' '0' "$RC"
+orphan_finalize_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+orphan_finalize_dir="$GLM_AGENT_HOME/workers/$orphan_finalize_worker_id"
+for _ in {1..500}; do
+  [[ -f "$orphan_finalize_started" && -s "$orphan_finalize_child_pid_file" ]] && break
+  sleep 0.01
+done
+orphan_finalize_child_pid="$(cat "$orphan_finalize_child_pid_file" 2>/dev/null || true)"
+if [[ -n "$orphan_finalize_child_pid" ]] &&
+  kill -0 "$orphan_finalize_child_pid" 2>/dev/null; then
+  pass 'orphan finalize test provider child is running'
+else
+  fail 'orphan finalize test provider child is running' \
+    'provider child did not start'
+fi
+orphan_finalize_runner_pid="$(sed -n 's/^runner_pid=//p' \
+  "$orphan_finalize_dir/active/state" | head -n 1)"
+kill -KILL "$orphan_finalize_runner_pid" 2>/dev/null || true
+wait "$orphan_finalize_runner_pid" 2>/dev/null || true
+capture "$SCRIPT" status "$orphan_finalize_worker_id"
+assert_eq 'status recovers a runner killed while its provider survives' '0' "$RC"
+assert_contains 'orphaned runner becomes INVALID' "$OUTPUT" 'STATUS=INVALID'
+for _ in {1..300}; do
+  if ! process_is_running_test "$orphan_finalize_child_pid"; then
+    break
+  fi
+  sleep 0.01
+done
+if ! process_is_running_test "$orphan_finalize_child_pid"; then
+  pass 'finalizing a runner killed out from under its provider still drains it'
+else
+  fail 'finalizing a runner killed out from under its provider still drains it' \
+    "child $orphan_finalize_child_pid is still alive"
+fi
+unset FAKE_CLAUDE_HANG_STARTED FAKE_CLAUDE_HANG_RELEASE \
+  FAKE_CLAUDE_CHILD_PID_FILE FAKE_CLAUDE_PROVIDER_PGID_FILE
+
 capture "$SCRIPT" start --cwd "$PROJECT" 'empty runner recovery worker'
 empty_runner_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
 empty_runner_dir="$GLM_AGENT_HOME/workers/$empty_runner_id"
@@ -1073,6 +1394,175 @@ assert_contains 'live active lock is authoritative RUNNING state' "$OUTPUT" \
   'STATUS=RUNNING'
 rm -f "$active_status_dir/active/state"
 rmdir "$active_status_dir/active"
+
+SLOW_CAT_DIR="$TEST_ROOT/slow-cat"
+mkdir -p "$SLOW_CAT_DIR"
+cat >"$SLOW_CAT_DIR/cat" <<'SLOWCAT'
+#!/usr/bin/env bash
+if [[ -n "${SLOW_CAT_ACTIVE_STATE:-}" && "$1" == *"/active/state" ]]; then
+  sleep 0.3
+fi
+exec /bin/cat "$@"
+SLOWCAT
+chmod +x "$SLOW_CAT_DIR/cat"
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'concurrent release race worker'
+race_release_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+race_release_dir="$GLM_AGENT_HOME/workers/$race_release_id"
+mkdir "$race_release_dir/active"
+cat >"$race_release_dir/active/state" <<EOF
+generation=race-release-generation
+mode=headless
+turn=2
+supervision=sync
+runner_pid=$$
+runner_start=$(process_start_test $$)
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=$(date +%s)
+EOF
+(
+  sleep 0.1
+  rm -f "$race_release_dir/active/state"
+  rmdir "$race_release_dir/active" 2>/dev/null || true
+) &
+race_release_pid=$!
+if OUTPUT="$(SLOW_CAT_ACTIVE_STATE=1 PATH="$SLOW_CAT_DIR:$PATH" \
+  "$SCRIPT" status "$race_release_id" 2>"$TEST_ROOT/race-release.err")"; then
+  RC=0
+else
+  RC=$?
+fi
+wait "$race_release_pid" 2>/dev/null || true
+assert_eq 'status does not crash when active/state vanishes mid-read' '0' "$RC"
+assert_contains 'status still prints a stable snapshot after the vanish race' \
+  "$OUTPUT" 'WORKER_ID='
+assert_not_contains 'status does not leak a raw cat crash to stderr' \
+  "$(cat "$TEST_ROOT/race-release.err")" 'No such file or directory'
+rm -f "$race_release_dir/active/state"
+rmdir "$race_release_dir/active" 2>/dev/null || true
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'partial active publication worker'
+partial_active_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+partial_active_dir="$GLM_AGENT_HOME/workers/$partial_active_id"
+sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
+  "$partial_active_dir/meta" >"$partial_active_dir/meta.next"
+mv "$partial_active_dir/meta.next" "$partial_active_dir/meta"
+mkdir "$partial_active_dir/active"
+"$SCRIPT" status "$partial_active_id" \
+  >"$TEST_ROOT/partial-active.out" 2>"$TEST_ROOT/partial-active.err" &
+partial_status_pid=$!
+sleep 0.05
+cat >"$partial_active_dir/active/state" <<EOF
+generation=partial-active-generation
+mode=headless
+turn=2
+supervision=sync
+runner_pid=$$
+runner_start=$(process_start_test $$)
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=$(date +%s)
+EOF
+if wait "$partial_status_pid"; then
+  partial_status_output="$(cat "$TEST_ROOT/partial-active.out")"
+  assert_contains 'status retries partial active publication' \
+    "$partial_status_output" 'STATUS=RUNNING'
+  assert_contains 'partial active publication keeps active turn' \
+    "$partial_status_output" 'ACTIVE_TURN=2'
+else
+  fail 'status retries partial active publication' \
+    "$(cat "$TEST_ROOT/partial-active.err")"
+fi
+rm -f "$partial_active_dir/active/state"
+rmdir "$partial_active_dir/active"
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'permanently missing active state worker'
+missing_state_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+missing_state_dir="$GLM_AGENT_HOME/workers/$missing_state_id"
+sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
+  "$missing_state_dir/meta" >"$missing_state_dir/meta.next"
+mv "$missing_state_dir/meta.next" "$missing_state_dir/meta"
+mkdir "$missing_state_dir/active"
+missing_state_started_at="$(date +%s)"
+if missing_state_wait_output="$(gtimeout 6 "$SCRIPT" wait --timeout 1 \
+  "$missing_state_id" 2>&1)"; then
+  missing_state_wait_rc=0
+else
+  missing_state_wait_rc=$?
+fi
+missing_state_elapsed="$(( $(date +%s) - missing_state_started_at ))"
+assert_eq 'wait honors timeout when active/state never appears' '0' \
+  "$missing_state_wait_rc"
+assert_contains 'wait times out instead of hanging on missing active/state' \
+  "$missing_state_wait_output" 'WAIT_RESULT=TIMEOUT'
+if ((missing_state_elapsed <= 3)); then
+  pass 'wait with missing active/state returns near the requested timeout'
+else
+  fail 'wait with missing active/state returns near the requested timeout' \
+    "took ${missing_state_elapsed}s for a 1s timeout"
+fi
+
+touch -mt "$(date -v-10S +%Y%m%d%H%M.%S)" "$missing_state_dir/active"
+capture "$SCRIPT" status "$missing_state_id"
+assert_eq 'status recovers an orphaned lock with no active/state' '0' "$RC"
+assert_contains 'orphaned lock with no active/state becomes INVALID' "$OUTPUT" \
+  'STATUS=INVALID'
+assert_contains 'orphaned lock with no active/state is classified interrupted' \
+  "$OUTPUT" 'ERROR_KIND=interrupted'
+if [[ ! -d "$missing_state_dir/active" ]]; then
+  pass 'orphaned lock with no active/state is released'
+else
+  fail 'orphaned lock with no active/state is released' 'active directory remains'
+fi
+
+FAKE_GNU_STAT_DIR="$TEST_ROOT/fake-gnu-stat"
+mkdir -p "$FAKE_GNU_STAT_DIR"
+cat >"$FAKE_GNU_STAT_DIR/stat" <<'FAKESTAT'
+#!/usr/bin/env bash
+mode="$1"
+path="$3"
+case "$mode" in
+  -f)
+    printf 'Filesystem Type: fake-gnu-confusion\n'
+    exit 1
+    ;;
+  -c)
+    /usr/bin/stat -f '%m' "$path" 2>/dev/null
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+FAKESTAT
+chmod +x "$FAKE_GNU_STAT_DIR/stat"
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'gnu stat fallback worker'
+gnu_stat_worker_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+gnu_stat_dir="$GLM_AGENT_HOME/workers/$gnu_stat_worker_id"
+sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
+  "$gnu_stat_dir/meta" >"$gnu_stat_dir/meta.next"
+mv "$gnu_stat_dir/meta.next" "$gnu_stat_dir/meta"
+mkdir "$gnu_stat_dir/active"
+touch -mt "$(date -v-10S +%Y%m%d%H%M.%S)" "$gnu_stat_dir/active"
+if OUTPUT="$(PATH="$FAKE_GNU_STAT_DIR:$PATH" "$SCRIPT" status \
+  "$gnu_stat_worker_id" 2>"$TEST_ROOT/gnu-stat.err")"; then
+  RC=0
+else
+  RC=$?
+fi
+assert_eq 'status succeeds when BSD stat -f is unavailable' '0' "$RC"
+assert_contains 'GNU stat -c fallback recovers an aged orphan lock' "$OUTPUT" \
+  'STATUS=INVALID'
+if [[ ! -d "$gnu_stat_dir/active" ]]; then
+  pass 'GNU stat -c fallback path releases the lock'
+else
+  fail 'GNU stat -c fallback path releases the lock' \
+    "$(cat "$TEST_ROOT/gnu-stat.err")"
+fi
 
 capture "$SCRIPT" wait --timeout -1 "$async_worker_id"
 assert_eq 'negative wait timeout is rejected' '2' "$RC"
@@ -1224,6 +1714,71 @@ assert_eq 'unexpected resumed session is an invocation failure' '1' "$RC"
 assert_contains 'unexpected resumed session reports INVALID' "$OUTPUT" 'STATUS=INVALID'
 assert_contains 'unexpected resumed session identifies mismatch' "$OUTPUT" 'ERROR=unexpected-session-id'
 assert_eq 'unexpected session does not replace stored session' 'session-1' "$(meta_get_test "$meta" claude_session_id)"
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'close race fixture worker'
+assert_eq 'close race fixture starts' '0' "$RC"
+close_race_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+close_race_dir="$GLM_AGENT_HOME/workers/$close_race_id"
+assert_contains 'close race fixture reaches DONE before the race' "$OUTPUT" \
+  'STATUS=DONE'
+mkdir "$close_race_dir/active"
+cat >"$close_race_dir/active/state" <<EOF
+generation=close-race-generation
+mode=close
+turn=1
+supervision=
+runner_pid=
+runner_start=
+provider_pid=
+provider_pgid=
+provider_start=
+started_at=1
+EOF
+capture "$SCRIPT" status "$close_race_id"
+assert_eq 'status recovers a killed close lock' '0' "$RC"
+assert_contains 'killed close lock does not corrupt a DONE worker' "$OUTPUT" \
+  'STATUS=DONE'
+assert_not_contains 'killed close lock does not mark the worker interrupted' \
+  "$OUTPUT" 'ERROR_KIND=interrupted'
+assert_contains 'killed close lock leaves closed unset' "$OUTPUT" 'CLOSED=false'
+if [[ ! -d "$close_race_dir/active" ]]; then
+  pass 'killed close lock is released'
+else
+  fail 'killed close lock is released' 'active directory remains'
+fi
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'atomic active state worker'
+assert_eq 'atomic active state worker starts' '0' "$RC"
+atomic_state_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+atomic_state_dir="$GLM_AGENT_HOME/workers/$atomic_state_id"
+atomic_state_observed_empty=0
+for _ in {1..40}; do
+  "$SCRIPT" close "$atomic_state_id" >/dev/null 2>&1 &
+  atomic_close_pid=$!
+  # Poll for the process's entire lifetime (not a fixed iteration budget):
+  # the interesting window is wherever it falls inside close's execution,
+  # and a fixed head-start can finish checking before that window opens.
+  # Use a single read (wc -c) rather than separate -f/-s tests: two
+  # independent stat() calls have their own TOCTOU gap, so a legitimate
+  # release() deleting the file between them would make -s report false
+  # (file gone) and be misread as "exists with zero bytes".
+  while kill -0 "$atomic_close_pid" 2>/dev/null; do
+    atomic_state_size="$(wc -c "$atomic_state_dir/active/state" 2>/dev/null |
+      awk '{print $1}')" || atomic_state_size=""
+    if [[ "$atomic_state_size" == "0" ]]; then
+      atomic_state_observed_empty=1
+      break
+    fi
+  done
+  wait "$atomic_close_pid" 2>/dev/null || true
+  ((atomic_state_observed_empty)) && break
+done
+if ((atomic_state_observed_empty)); then
+  fail 'active/state is never observed empty while a lock is being acquired' \
+    'observed a transient empty active/state file'
+else
+  pass 'active/state is never observed empty while a lock is being acquired'
+fi
 
 capture "$SCRIPT" close "$worker_id"
 assert_eq 'close succeeds' '0' "$RC"
