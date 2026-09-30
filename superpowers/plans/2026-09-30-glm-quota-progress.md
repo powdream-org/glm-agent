@@ -53,3 +53,12 @@
   - 제시했던 안: A(CLI 판정) / B(수치만) / C(start·send 내장 pre-flight) / A+C
   - B를 받아들이는 근거(내 판단): 적정 임계치는 작업 크기·중요도에 달렸고 그것은 오케스트레이터만 안다. GLM turn당 credit 소비를 잰 데이터가 없어 CLI 기본 임계치는 근거 없는 숫자가 된다.
   - B의 비용: 판정 규칙을 hermetic test로 검증할 수 없다. 완화책: CLI가 창별 잔여량·리셋 시각을 계산 없이 비교 가능한 형태로 출력하고, skill은 비교만 하게 한다. A 대비 B의 손해는 modest로 판단.
+- 2026-10-01 설계 1/2 (CLI `glm-agent quota`) **User 승인** ("ㅇㅋ"). 요지:
+  - `GET <ZAI_BASE_URL의 scheme+host>/api/monitor/usage/quota/limit`, key는 `curl -H @-` stdin 헤더로만 전달, `--connect-timeout 5 --max-time 10`
+  - stdout: `QUOTA_STATUS=OK|INVALID`, `PLAN_LEVEL`, `LIMIT_COUNT`, `LIMIT_<n>_{TYPE,WINDOW,TOTAL,USED,REMAINING,USED_PERCENT,RESET_AT}`, `RESPONSE`, `ERROR_KIND`, `PROVIDER_CODE`
+  - 서버 값 그대로(계산 금지), WINDOW는 실측 코드만 매핑(3→h, 6→w), 미지 코드는 `u<unit>x<number>`, RESET_AT은 jq `todate` UTC, `limits[]` 전부 출력(TIME_LIMIT 포함)
+  - ERROR_KIND: `authentication`(401/403, 1000/1001/1003) · `provider-transient`(네트워크·timeout·5xx·1302/1305) · `provider-error`(기타·`success:false`) · `invalid-response`(파싱 실패·`data.limits` 없음)
+  - exit 0=조회 성공(잔여 0이어도) / 1=조회 실패 / 2=사용법·설정
+  - raw는 `~/.glm/quota/`에 마지막 1회분 덮어쓰기
+  - 제외: 24h 토큰 사용량(`model-usage`) — gate에 불필요(YAGNI)
+- 확인한 사실: Claude Code 공식 문서(Context7 `/websites/code_claude`, skills 문서 "Available string substitutions") — plugin skill에서 `${CLAUDE_PLUGIN_ROOT}`는 본문과 `allowed-tools` Bash 규칙 양쪽에서 치환된다. `unit` 코드표는 공개 자료에서 찾지 못함(LogicIncZo/zai-usage README에도 없음).
