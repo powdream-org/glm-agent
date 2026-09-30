@@ -121,3 +121,5 @@
 - CLI test: 399/399, plugin test: 57/57, `claude plugin validate --strict .` pass, `shellcheck`/`bash -n`/`git diff --check` 전부 pass
 - 4차 독립 리뷰(codex+opus 교차검증) 채택 10건 전부 TDD 수정 완료, 기각 1건(PID/PGID TOCTOU, opus 실측 반증)
 - 잔존 fixture/`_execute-turn` 프로세스 없음
+- 2026-09-30 원장 커밋 `042b2008c2de231baa06dcd6ac6445ff10ea3a2e` "docs: record 0.4.0 release verification and deployment"도 동일 절차(powdream 계정 전환→push→heejoon-toridori 원복)로 push. `origin/main` 최종 = `042b2008c2de231baa06dcd6ac6445ff10ea3a2e`. 이 커밋은 문서 전용이라 설치 plugin(코드·manifest 불변) 재갱신 불필요.
+- **handoff `2026-09-30-glm-agent-0.4.0-release-handoff.md`의 다음 작업 1~10 전부 완료.**
