@@ -43,3 +43,9 @@
   - 명령: `GET https://api.z.ai/api/monitor/usage/model-usage?startTime=<어제 HH:00:00>&endTime=<오늘 HH:59:59>` → `HTTP 200`
   - 관측: `data` keys = `granularity`("hourly"), `modelCallCount[24]`, `modelDataList[]`(`modelName`, `tokensUsage[24]`, `totalTokens`), `modelSummaryList`, `tokensUsage`, `totalUsage`(`totalModelCallCount`=282, `totalTokensUsage`=35345227, 모델별 `totalTokens`: GLM-5.3=35206505, GLM-5.3-Flash=138722), `x_time`
   - 해석: 토큰 수는 **최근 24시간 사용량**으로만 얻을 수 있다. "남은 토큰"은 API가 주지 않는다. 잔여량은 credit 단위로만 존재한다.
+
+## 결정
+
+- 2026-10-01 용도 = **오케스트레이터 gate** (User 선택. 제시안 중 "둘 다"를 권장했으나 User가 gate 전용을 골랐다). 사람이 읽기 좋은 출력은 부차적이다.
+  - 근거(내 판단): 현재 오케스트레이터는 GLM turn이 `ERROR_KIND=quota-exhausted`로 실패한 **뒤에야** native로 전환한다(`agents/*.md`, my-superpowers §6 quota latch). dispatch 전 잔여량을 보면 실패한 turn과 부분 산출물을 줄일 수 있다.
+- 참고: bridge agent(`agents/general-purpose.md`)는 `bash "${CLAUDE_PLUGIN_ROOT}/glm-agent" <cmd>` 한 번으로 CLI를 부른다. skill도 같은 경로 규약을 쓴다.
