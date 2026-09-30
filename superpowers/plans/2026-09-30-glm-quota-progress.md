@@ -49,3 +49,7 @@
 - 2026-10-01 용도 = **오케스트레이터 gate** (User 선택. 제시안 중 "둘 다"를 권장했으나 User가 gate 전용을 골랐다). 사람이 읽기 좋은 출력은 부차적이다.
   - 근거(내 판단): 현재 오케스트레이터는 GLM turn이 `ERROR_KIND=quota-exhausted`로 실패한 **뒤에야** native로 전환한다(`agents/*.md`, my-superpowers §6 quota latch). dispatch 전 잔여량을 보면 실패한 turn과 부분 산출물을 줄일 수 있다.
 - 참고: bridge agent(`agents/general-purpose.md`)는 `bash "${CLAUDE_PLUGIN_ROOT}/glm-agent" <cmd>` 한 번으로 CLI를 부른다. skill도 같은 경로 규약을 쓴다.
+- 2026-10-01 접근 = **B: CLI는 수치만 출력, 판정 기준은 skill 문서** (User 선택). **내 권장(A: CLI가 `QUOTA_STATE`·`DISPATCH_RECOMMENDED` 판정)을 뒤집었다.**
+  - 제시했던 안: A(CLI 판정) / B(수치만) / C(start·send 내장 pre-flight) / A+C
+  - B를 받아들이는 근거(내 판단): 적정 임계치는 작업 크기·중요도에 달렸고 그것은 오케스트레이터만 안다. GLM turn당 credit 소비를 잰 데이터가 없어 CLI 기본 임계치는 근거 없는 숫자가 된다.
+  - B의 비용: 판정 규칙을 hermetic test로 검증할 수 없다. 완화책: CLI가 창별 잔여량·리셋 시각을 계산 없이 비교 가능한 형태로 출력하고, skill은 비교만 하게 한다. A 대비 B의 손해는 modest로 판단.
