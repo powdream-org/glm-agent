@@ -42,7 +42,7 @@ key는 stdin 헤더로만 전달했다.
 |---|---|
 | `remaining` | 5h 창에서 549이고 `usage - currentValue`는 550이다. 반올림 방식 미확인 |
 | `percentage` | 2000 중 1450은 72.5이고 출력은 72이다. 내림으로 보인다(추정) |
-| `nextResetTime` | epoch ms이다. `date -r 1790791395` → `2026-10-01T03:03:15+0900`, `date -r 1791162764` → `2026-10-05T10:12:44+0900` |
+| `nextResetTime` | epoch ms이다. `date -r 1790791395` → `2026-10-01T03:03:15+0900`, `date -r 1791162764` → `2026-10-05T10:12:44+0900`. 2026-10-01 13:28 live smoke에서 5h 창 사용량이 0일 때는 이 키가 응답에 없었다(창은 소비 시점부터 시작). CLI는 빈 `RESET_AT`을 출력한다 |
 | `unit`, `number` | 3/5 = 5시간 창, 6/1 = 1주 창으로 추정한다. 리셋까지 약 2h51m / 약 4.4일과 맞는다. unit 코드표는 미확인 |
 
 ### 2.2 공식 plugin 스크립트와의 차이
@@ -101,7 +101,7 @@ B의 득실은 다음과 같다.
 | `ZAI_BASE_URL` | 기존 CLI 변수(`glm-agent:20`). 기본값 `https://api.z.ai/api/anthropic`. `^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/|$)`에 맞지 않으면 exit 2 |
 | 인증 | `Authorization:` 헤더 한 줄(key 값 그대로, Bearer 접두사 없음)을 stdin으로 `curl -H @-`에 전달 |
 | timeout | `--connect-timeout 5 --max-time 10` |
-| 추가 헤더·옵션 | `Accept-Language: en-US,en`(공식 plugin과 같음, 영어 오류 메시지), `-sS` |
+| 추가 헤더·옵션 | `-q`(**첫 인자**. 사용자 `~/.curlrc`를 읽지 않는다 — `verbose`면 key가 stderr에, `fail`이면 401이 일시 오류로 바뀐다. 최종 리뷰 I1), `Accept-Language: en-US,en`(공식 plugin과 같음, 영어 오류 메시지), `-sS` |
 | 의존 도구 | `curl` 7.55 이상(`-H @-` 지원, 로컬 `man curl`로 확인), `jq` |
 
 ### 5.1 stdout
@@ -163,6 +163,7 @@ PROVIDER_CODE=<응답 code 또는 빈 값>
 - `WINDOW`는 `number`에 단위 문자를 붙여 만든다
   - `unit`=3은 `h`, `unit`=6은 `w`이므로 `5h`, `1w`가 나온다
   - 그 밖의 코드는 `u<unit>x<number>`로 보존한다
+  - `unit`이나 `number`가 숫자가 아니면 빈 값이다
   - 이 매핑은 실측한 두 항목에서 추정한 것이다(unit 코드표 미확인)
 - `limits[]`의 모든 항목을 `TIME_LIMIT`까지 출력한다
 - "서버 값 그대로"의 예외: 서버 문자열(`PLAN_LEVEL`, `TYPE`)의 제어 문자(개행 포함)는 공백으로 바꾼다. 서버 값이 `QUOTA_STATUS=` 같은 줄을 위조하지 못하게 하기 위해서다. 정상 값은 달라지지 않는다
@@ -175,12 +176,15 @@ PROVIDER_CODE=<응답 code 또는 빈 값>
 
 | 순서 | 조건 | ERROR_KIND |
 |---|---|---|
-| 1 | curl exit ≠ 0 (네트워크 오류, timeout) | `provider-transient` |
-| 2 | HTTP 401·403 | `authentication` |
-| 3 | HTTP 429·5xx | `provider-transient` |
-| 4 | 본문 JSON의 숫자 `code`가 200이 아니거나 `success`가 `true`가 아님 | 기존 `classify_error_kind <code> provider-error` 결과 |
+| 1 | curl exit ≠ 0 (네트워크 오류, timeout) | `provider-transient` (본문 code와 무관) |
+| 2 | HTTP 401·403 | 본문 code 우선, 없거나 미지 code면 `authentication` |
+| 3 | HTTP 429·5xx | 본문 code 우선, 없거나 미지 code면 `provider-transient` |
+| 4 | 본문 JSON의 `code`가 숫자 200이 아니거나 `success`가 `true`가 아님 | 기존 `classify_error_kind <code> provider-error` 결과 |
 | 5 | HTTP 200인데 JSON 파싱 실패, 또는 `data.limits`가 배열이 아님 | `invalid-response` |
-| 6 | 그 밖의 HTTP 비-200 | `provider-error` |
+| 6 | 그 밖의 HTTP 비-200 | 본문 code 우선, 없거나 미지 code면 `provider-error` |
+
+- "본문 code 우선"(최종 리뷰 M5): 본문이 JSON 객체 1개이고 숫자 `code`가 200이 아니면 `classify_error_kind <code> <행 기본값>`을 쓴다. 결과가 `provider-error`(미지 code)면 행 기본값을 쓴다. 예: HTTP 429 + code 1113 → `quota-exhausted`. 이 endpoint가 실제로 429와 1113을 함께 보내는지는 미검증이다
+- `code` 비교는 jq 안에서 숫자로 한다(최종 리뷰 M4). `"code":200.0`도 성공이다. `PROVIDER_CODE`는 표시용 문자열이다
 
 - `PROVIDER_CODE`는 본문 JSON의 숫자 `code`가 200이 아닐 때 그 값이고, 그 외에는 빈 값이다
 - 4행은 글자 그대로 적용한다. HTTP 200 + `{}`처럼 `code`·`success`가 없는 본문은 4행에 걸려 `provider-error`가 된다
@@ -193,7 +197,9 @@ PROVIDER_CODE=<응답 code 또는 빈 값>
 |---|---|
 | 0 | 조회 성공. 잔여가 0이어도 0이다 |
 | 1 | 조회 실패. `QUOTA_STATUS=INVALID` |
-| 2 | 사용법·설정 오류: 인자가 붙음(`quota extra`), key 미설정(`ZAI_API_KEY` 비어 있고 auth file 없음 또는 빈 파일), `curl`·`jq` 없음, `ZAI_BASE_URL` 형식 위반 |
+| 2 | 사용법·설정 오류: 인자가 붙음(`quota extra`), key 미설정(`ZAI_API_KEY` 비어 있고 auth file 없음 또는 빈 파일), `curl`·`jq` 없음, `ZAI_BASE_URL` 형식 위반, quota 상태 디렉터리 생성·임시 파일·저장 실패. stdout은 비어 있다 |
+
+exit 1은 언제나 `QUOTA_STATUS=INVALID` 블록을 출력한다(최종 리뷰 M3). `QUOTA_STATUS` 줄 없이 exit 1로 끝나는 경로는 없다.
 
 ### 5.5 raw 산출물
 
@@ -201,6 +207,7 @@ PROVIDER_CODE=<응답 code 또는 빈 값>
 - 마지막 1회분만 남고 호출마다 덮어쓴다
 - 저장 대상은 응답 본문과 curl의 stderr다. 네트워크 실패로 본문이 없으면 `response.json`은 빈 파일이다
 - `RESPONSE`는 성공·실패와 무관하게 항상 출력한다
+- 임시 파일은 정상 종료·실패·INT·TERM 어느 경우에도 지운다(최종 리뷰 M6). 동시 실행 시 `response.json`과 `stderr.log`가 서로 다른 호출의 것일 수 있다 — "마지막 1회분" 정책상 허용한다
 
 ## 6. skill 설계
 
@@ -227,15 +234,16 @@ skill은 판정표를 위에서부터 읽고, 처음 일치하는 행을 따른�
 | 1 | `QUOTA_STATUS=INVALID`이고 `ERROR_KIND=authentication` | native Claude, User에게 보고 |
 | 2 | `QUOTA_STATUS=INVALID`이고 `ERROR_KIND=quota-exhausted` | native Claude. reset 시각을 모르므로 현재 orchestration session 동안 latch |
 | 3 | `QUOTA_STATUS=INVALID`이고 그 외 `ERROR_KIND` | GLM 진행(fail-open). 사후 fallback이 안전망 |
-| 4 | `TIME_LIMIT`가 아닌 항목에 `REMAINING=0` | native Claude. 소진 항목의 `RESET_AT` 중 최댓값까지 latch하고 그 뒤 재조회 |
+| 4 | `TIME_LIMIT`가 아닌 항목의 `REMAINING`이 0 이하의 숫자(`0`, `0.0`, `-1` 등. 빈 값은 해당 없음) | native Claude. 소진 항목의 `RESET_AT` 중 최댓값까지 latch하고 그 뒤 재조회. 소진 항목의 `RESET_AT`이 비어 있으면 현재 orchestration session 동안 latch |
 | 5 | `WINDOW=5h`의 `USED_PERCENT>=90` 또는 `WINDOW=1w`의 `USED_PERCENT>=98` | 단계형: 작고 범위가 정해진 단일 turn 작업만 GLM, 여러 turn 작업은 native Claude |
 | 6 | 그 외 | GLM 진행 |
 
 CLI가 exit 2(사용법·설정 오류, `QUOTA_STATUS` 줄 없음)로 끝나면 행 1과 같이 native Claude로 보내고 stderr 메시지를 User에게 보고한다.
 key 미설정, `jq` 없음, `ZAI_BASE_URL` 형식 위반은 GLM worker도 똑같이 멈추기 때문이다.
+exit가 0·1이 아니거나 `QUOTA_STATUS` 줄이 없는 출력도 exit 2와 같이 다룬다(최종 리뷰 M3, CLI 보장에 대한 이중 안전장치).
 
 완전 차단은 행 1·2·4와 exit 2에서만 일어난다.
-`WINDOW`가 `u<unit>x<number>`인 미지 창에는 행 4만 적용되고 행 5의 기준치는 적용되지 않는다.
+인식하는 창은 정확히 `5h`와 `1w`이다(최종 리뷰 M2). 그 밖의 `WINDOW`(빈 값, `u<unit>x<number>`, `1h`, `2w` 등)는 미지 창이며, 행 4만 적용되고 행 5의 기준치는 적용되지 않는다.
 미지 창이 있으면 어느 행이 적용되든 처음 보는 창이라고 함께 보고한다.
 행 4는 `TIME_LIMIT` 외의 type만 본다.
 `TIME_LIMIT`는 공식 스크립트가 "MCP usage(1 Month)"로 표시한 type이며, GLM 호출 한도와 별개로 보인다(추정, 이 계정 응답에 없어 미검증).
@@ -264,6 +272,7 @@ bridge agent(`agents/*.md`)는 현행 그대로 쓴다.
 key는 stdin의 헤더 한 줄로만 curl에 전달된다.
 
 - argv에는 curl 옵션과 URL만 있다
+- curl은 `-q`를 첫 인자로 받아 사용자 curlrc를 읽지 않는다. curlrc의 `verbose`·`trace`가 요청 헤더(key 포함)를 stderr로 쓰는 경로를 막는다
 - raw 파일에는 응답 본문만 저장된다
   - 응답 JSON의 키는 `code`, `msg`, `data`, `success`와 `data.limits`, `data.level`이다(probe 관측)
 - `~/.glm`은 mode 0700이다
@@ -294,6 +303,18 @@ fake `curl`은 받은 인자와 stdin을 파일에 기록하고, 케이스가 �
 | 사용법·설정 오류 | 인자 초과, key 미설정, `curl` 없음, `ZAI_BASE_URL=ftp://x` | exit 2, stdout 비어 있음 |
 | help | `glm-agent --help` | USAGE·COMMANDS·EXIT STATUS에 `quota` 포함 |
 | key 노출 검사 | 위 모든 케이스 | stdout·stderr의 key 문자열 검색 결과가 비어 있음 |
+
+최종 리뷰 반영으로 다음 케이스를 더한다.
+
+| 케이스 | 기대 결과 |
+|---|---|
+| curl 첫 인자 | 기록된 argv의 첫 항목이 `-q` |
+| 본문 code 우선 | HTTP 429 + 1113 → `quota-exhausted`, 429 + 9999 → `provider-transient`, 404 + 1113 → `quota-exhausted` |
+| code 숫자 비교 | `"code":200.0,"success":true` → `QUOTA_STATUS=OK`, exit 0 |
+| curl 실패 우선 | curl exit 28 + HTTP 200 + code 1113 → `provider-transient`, `PROVIDER_CODE=1113` |
+| 상태 디렉터리 실패 | 쓸 수 없는 `GLM_AGENT_HOME` → exit 2, stdout 비어 있음 |
+| 임시 파일 정리 | 성공·실패 뒤 `quota/`에 `.response.*`·`.stderr.*`가 남지 않음 |
+| key scan 범위 | `capture`로 실행한 exit 2 케이스까지 key 검출 0 |
 
 ### 8.2 skill 계약 (`tests/test_plugin.sh`)
 
