@@ -93,3 +93,9 @@
   - 주의: `proto5`의 SKILL.md·README는 exit 2 변경 **이전** 문구다. 실행은 plan에서 다시 적용하므로 영향 없음.
 - 2026-10-01 plan `1bac08c` **User 승인**, 실행 방식 = **좌석 1개 + 최종 리뷰** (User 선택, 내 권장안). provider = native Claude(my-superpowers §6 "GLM 자체의 수정은 native 우선").
   - 실행 좌석: general-purpose 1석(model sonnet), `superpowers:executing-plans`, Task 1~5(Task 5의 live smoke는 제외 — 메인이 User 허가 후 수행). 보고 파일 `<scratchpad>/exec-report.md`.
+- 2026-10-01 실행 좌석 완료 — general-purpose 1석(model sonnet): subagent_tokens 153,270 / tool_uses 48 / 502s. 보고 `<scratchpad>/exec-report.md`(38행), deviation 0, 확인 필요 0.
+  - 커밋: `35c4411` feat: add quota command for Z.ai credit limits / `5214ebd` feat: classify quota lookup failures / `f4c13d0` feat: add quota gate skill / `a4e30f9` docs: document quota command and gate skill / `25bd0f4` release: prepare glm-agent 0.5.0
+  - 변경 8파일 +817/-7: glm-agent(+189), tests/test_glm_agent.sh(+455), tests/test_plugin.sh(+41), skills/quota/SKILL.md(+65), README(+60), AGENTS.md(10), plugin.json·marketplace.json(버전). `superpowers/` 변경 0, `.superpowers`/`sdd` 디렉토리 생성 0.
+  - 메인 독립 검증(worktree, /bin/bash 3.2): `tests/test_glm_agent.sh` → `1..503 # all 503 tests passed` / `tests/test_plugin.sh` → `1..79 # all 79 tests passed` / `bash -n` OK / `shellcheck` OK / `claude plugin validate --strict .` → `✔ Validation passed` / `git diff --check 4cbbfc8..HEAD` OK
+  - 버전 3곳 0.5.0 일치(glm-agent:5, plugin.json, marketplace.json). `CLAUDE.md` → `AGENTS.md` symlink 유지. SKILL.md·README에 exit 2 → native 문구 반영 확인.
+  - 남은 것: live smoke(User 허가 필요), 최종 독립 리뷰, push·merge·재설치(별도 승인)
