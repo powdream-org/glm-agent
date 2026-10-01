@@ -129,3 +129,9 @@
 - 모델별 합: **opus 20.40M**(메인 17.26M + review 3.14M) / **sonnet 18.18M**(4석). 좌석 5개. 앞 구간 측정 없음(첫 측정).
 - 해석: 메인이 최대 비용 — 83 turns × 마지막 문맥 330K의 cache read. 원인 후보: (1) 메인이 spec 1~4절·plan Global/Task 3·리뷰 213행·보고서를 직접 읽음 (2) deferred MCP 도구 목록 등 고정 문맥이 큼 (3) 확인 질문·원장 커밋을 별도 turn으로 많이 씀. 다음에 줄일 방법: 좌석이 20행 이하 판정 파일을 따로 쓰게 하고 메인은 그것만 읽기, 원장 커밋을 다른 도구 호출과 한 Bash로 묶기.
 - 스크립트: 생성·이동·삭제 0(모두 일회성 inline). `seat_usage.py`의 파일명 패턴 불일치는 toridori 도구 쪽 개선 후보(이번 범위 밖).
+
+## 마무리 (superpowers:finishing-a-development-branch)
+
+- 2026-10-01 통합 전 검증(HEAD `ae9f4f5`): `test_glm_agent.sh` → `# all 532 tests passed`, `test_plugin.sh` → `# all 89 tests passed`, `claude plugin validate --strict .` → `✔ Validation passed`, `git status --short` 0줄
+- 환경: named-branch worktree(`GIT_DIR=.git/worktrees/glm-quota` ≠ `GIT_COMMON=.git`), 브랜치 `feat/glm-quota`. `git fetch origin` 후 `origin/main` = `25516ba` = merge-base(움직이지 않음). `origin/main..HEAD` 27 commits.
+- 통합 방식 User 결정 대기
