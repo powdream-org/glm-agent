@@ -91,3 +91,5 @@
   - **좌석 판정 뒤집음**: skill의 exit 2(설정 오류) 처리를 좌석안 fail-open → **native + User 보고**로 변경. 근거: key 미설정·`jq` 없음·`ZAI_BASE_URL` 위반은 GLM worker도 멈춘다(`curl` 없음만 예외). plan 62행·SKILL.md 본문·README 블록, spec 6.2 수정.
   - 좌석 보완 수용(spec에 반영): 제어 문자 → 공백 치환(stdout 줄 위조 방지), null 숫자 → 빈 값, `Accept-Language`·`-sS`·curl 7.55, HTTP 200 + `{}` → `provider-error`(5.3 4행 문자 그대로), 본문은 JSON 객체 정확히 1개일 때만 유효. AGENTS.md 추가 3줄(테스트 설명 2·key-stdin invariant 1) 수용.
   - 주의: `proto5`의 SKILL.md·README는 exit 2 변경 **이전** 문구다. 실행은 plan에서 다시 적용하므로 영향 없음.
+- 2026-10-01 plan `1bac08c` **User 승인**, 실행 방식 = **좌석 1개 + 최종 리뷰** (User 선택, 내 권장안). provider = native Claude(my-superpowers §6 "GLM 자체의 수정은 native 우선").
+  - 실행 좌석: general-purpose 1석(model sonnet), `superpowers:executing-plans`, Task 1~5(Task 5의 live smoke는 제외 — 메인이 User 허가 후 수행). 보고 파일 `<scratchpad>/exec-report.md`.
