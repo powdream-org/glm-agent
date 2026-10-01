@@ -84,3 +84,10 @@
 - 2026-10-01 plan 좌석 입력 준비: 메인 스크립트로 발췌 파일 `<scratchpad>/facts-plan.md` 생성 — 955행, 16절(glm-agent 1-260·928-942·1516-1549·2107-끝, test_glm_agent.sh 1-30·296-400·끝 46행, test_plugin.sh 1-130·끝 31행, README Commands·Security·Development, AGENTS.md 1-40, bump-version.sh 1-40, plugin.json, probe fixture 원문)
   - GAPS(의도적 제외): test_glm_agent.sh 31-295(fake claude 본문)·401-(끝-46)(기존 케이스). fake curl은 신규라 불필요.
   - 좌석: general-purpose 1석(model sonnet), 출력 `superpowers/plans/2026-10-01-glm-quota-implementation.md`, 외부 읽기 상한 5회, checker 반복 금지
+- 2026-10-01 plan 초안 `superpowers/plans/2026-10-01-glm-quota-implementation.md` — general-purpose 1석(model sonnet)
+  - 좌석 비용(완료 알림 기준): subagent_tokens 263,815 / tool_uses 41 / 1305s. 브리프에 없던 **프로토타입 검증**(scratchpad `proto*/`에 plan 코드 적용 후 전체 테스트)을 좌석이 자체 수행 → 비용 증가 원인. 대신 실행 단계의 불확실성이 줄었다.
+  - 메인 재확인: 1537행, Task 1~5, TBD 0, bash 3.2 금지 구문 0(규칙 서술 행만 매칭), key가 curl argv에 들어가는 구문 0(256행은 fake curl stdin 검사). `man curl` → "-H @file ... Using @- makes curl read the header file from stdin. Added in 7.55.0." 확인.
+  - 메인 독립 실행(`<scratchpad>/proto5`, /bin/bash 3.2): `tests/test_glm_agent.sh` → `1..503 # all 503 tests passed`, `tests/test_plugin.sh` → `1..79 # all 79 tests passed`, `shellcheck` OK, `bash -n` OK, `claude plugin validate --strict .` → `✔ Validation passed`. (기준선 0.4.0: 399 / 57)
+  - **좌석 판정 뒤집음**: skill의 exit 2(설정 오류) 처리를 좌석안 fail-open → **native + User 보고**로 변경. 근거: key 미설정·`jq` 없음·`ZAI_BASE_URL` 위반은 GLM worker도 멈춘다(`curl` 없음만 예외). plan 62행·SKILL.md 본문·README 블록, spec 6.2 수정.
+  - 좌석 보완 수용(spec에 반영): 제어 문자 → 공백 치환(stdout 줄 위조 방지), null 숫자 → 빈 값, `Accept-Language`·`-sS`·curl 7.55, HTTP 200 + `{}` → `provider-error`(5.3 4행 문자 그대로), 본문은 JSON 객체 정확히 1개일 때만 유효. AGENTS.md 추가 3줄(테스트 설명 2·key-stdin invariant 1) 수용.
+  - 주의: `proto5`의 SKILL.md·README는 exit 2 변경 **이전** 문구다. 실행은 plan에서 다시 적용하므로 영향 없음.

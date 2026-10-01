@@ -101,7 +101,8 @@ B의 득실은 다음과 같다.
 | `ZAI_BASE_URL` | 기존 CLI 변수(`glm-agent:20`). 기본값 `https://api.z.ai/api/anthropic`. `^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/|$)`에 맞지 않으면 exit 2 |
 | 인증 | `Authorization:` 헤더 한 줄(key 값 그대로, Bearer 접두사 없음)을 stdin으로 `curl -H @-`에 전달 |
 | timeout | `--connect-timeout 5 --max-time 10` |
-| 의존 도구 | `curl`, `jq` |
+| 추가 헤더·옵션 | `Accept-Language: en-US,en`(공식 plugin과 같음, 영어 오류 메시지), `-sS` |
+| 의존 도구 | `curl` 7.55 이상(`-H @-` 지원, 로컬 `man curl`로 확인), `jq` |
 
 ### 5.1 stdout
 
@@ -164,6 +165,8 @@ PROVIDER_CODE=<응답 code 또는 빈 값>
   - 그 밖의 코드는 `u<unit>x<number>`로 보존한다
   - 이 매핑은 실측한 두 항목에서 추정한 것이다(unit 코드표 미확인)
 - `limits[]`의 모든 항목을 `TIME_LIMIT`까지 출력한다
+- "서버 값 그대로"의 예외: 서버 문자열(`PLAN_LEVEL`, `TYPE`)의 제어 문자(개행 포함)는 공백으로 바꾼다. 서버 값이 `QUOTA_STATUS=` 같은 줄을 위조하지 못하게 하기 위해서다. 정상 값은 달라지지 않는다
+- null이거나 빠진 숫자 필드는 빈 값으로 출력한다. 문자열 `null`을 출력하지 않는다
 
 ### 5.3 ERROR_KIND
 
@@ -180,6 +183,8 @@ PROVIDER_CODE=<응답 code 또는 빈 값>
 | 6 | 그 밖의 HTTP 비-200 | `provider-error` |
 
 - `PROVIDER_CODE`는 본문 JSON의 숫자 `code`가 200이 아닐 때 그 값이고, 그 외에는 빈 값이다
+- 4행은 글자 그대로 적용한다. HTTP 200 + `{}`처럼 `code`·`success`가 없는 본문은 4행에 걸려 `provider-error`가 된다
+- 본문은 JSON 객체가 정확히 1개일 때만 유효하다. 뒤에 다른 문자가 붙은 본문은 5행 `invalid-response`이다
 - 4행은 기존 분류표를 그대로 재사용한다. 1000·1001·1003은 `authentication`, 1302·1305는 `provider-transient`, 1113·1308 등은 `quota-exhausted`, 1211·1311은 `model-unavailable`, 그 밖의 code는 `provider-error`가 된다
 
 ### 5.4 종료 코드
@@ -226,7 +231,10 @@ skill은 판정표를 위에서부터 읽고, 처음 일치하는 행을 따른�
 | 5 | `WINDOW=5h`의 `USED_PERCENT>=90` 또는 `WINDOW=1w`의 `USED_PERCENT>=98` | 단계형: 작고 범위가 정해진 단일 turn 작업만 GLM, 여러 turn 작업은 native Claude |
 | 6 | 그 외 | GLM 진행 |
 
-완전 차단은 행 1·2·4에서만 일어난다.
+CLI가 exit 2(사용법·설정 오류, `QUOTA_STATUS` 줄 없음)로 끝나면 행 1과 같이 native Claude로 보내고 stderr 메시지를 User에게 보고한다.
+key 미설정, `jq` 없음, `ZAI_BASE_URL` 형식 위반은 GLM worker도 똑같이 멈추기 때문이다.
+
+완전 차단은 행 1·2·4와 exit 2에서만 일어난다.
 `WINDOW`가 `u<unit>x<number>`인 미지 창에는 행 4만 적용되고 행 5의 기준치는 적용되지 않는다.
 미지 창이 있으면 어느 행이 적용되든 처음 보는 창이라고 함께 보고한다.
 행 4는 `TIME_LIMIT` 외의 type만 본다.
