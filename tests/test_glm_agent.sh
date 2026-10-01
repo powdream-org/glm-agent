@@ -1905,17 +1905,18 @@ if [[ -n "${FAKE_CURL_BLOCK_STARTED:-}" ]]; then
   done
 fi
 
-curl_exit="${FAKE_CURL_EXIT:-0}"
-if ((curl_exit != 0)); then
-  printf 'curl: (%s) fake failure\n' "$curl_exit" >&2
-  printf '000'
-  exit "$curl_exit"
-fi
-
+# A non-zero exit can still follow a received status and body (a timeout while
+# reading the response, for example), so the body and status are written first.
 if [[ -n "${FAKE_CURL_BODY_FILE:-}" ]]; then
   cp "$FAKE_CURL_BODY_FILE" "$output"
 fi
 printf '%s' "${FAKE_CURL_STATUS:-200}"
+
+curl_exit="${FAKE_CURL_EXIT:-0}"
+if ((curl_exit != 0)); then
+  printf 'curl: (%s) fake failure\n' "$curl_exit" >&2
+  exit "$curl_exit"
+fi
 FAKE
 chmod +x "$FAKE_BIN/curl"
 
@@ -2316,6 +2317,8 @@ JSON
 cat >"$QUOTA_FIXTURES/data-null.json" <<'JSON'
 {"code":200,"msg":"ok","data":null,"success":true}
 JSON
+sed 's/"code":200,/"code":200.0,/' "$QUOTA_FIXTURES/ok.json" \
+  >"$QUOTA_FIXTURES/code-200-float.json"
 printf '%s\n' '<html>bad gateway</html>' >"$QUOTA_FIXTURES/not-json.txt"
 printf '%s\n' '[]' >"$QUOTA_FIXTURES/array.json"
 { cat "$QUOTA_FIXTURES/ok.json"; printf 'trailing garbage\n'; } \
@@ -2356,6 +2359,34 @@ for http_status in 500 503; do
   assert_quota_failure "HTTP $http_status is provider-transient" \
     provider-transient ''
 done
+
+# A curl failure wins even when curl already saw a status and a valid body.
+quota_case 200 "$QUOTA_FIXTURES/code-1113.json" 28
+assert_quota_failure 'curl failure outranks an HTTP 200 body with code 1113' \
+  provider-transient 1113
+
+# A classified body code refines the HTTP row; an unknown code keeps the row.
+quota_case 429 "$QUOTA_FIXTURES/code-1113.json" 0
+assert_quota_failure 'HTTP 429 with body code 1113 is quota-exhausted' \
+  quota-exhausted 1113
+quota_case 503 "$QUOTA_FIXTURES/code-1113.json" 0
+assert_quota_failure 'HTTP 503 with body code 1113 is quota-exhausted' \
+  quota-exhausted 1113
+quota_case 429 "$QUOTA_FIXTURES/code-9999.json" 0
+assert_quota_failure 'HTTP 429 with an unknown body code stays provider-transient' \
+  provider-transient 9999
+quota_case 401 "$QUOTA_FIXTURES/code-1001.json" 0
+assert_quota_failure 'HTTP 401 with body code 1001 is authentication' \
+  authentication 1001
+quota_case 401 "$QUOTA_FIXTURES/code-9999.json" 0
+assert_quota_failure 'HTTP 401 with an unknown body code stays authentication' \
+  authentication 9999
+quota_case 404 "$QUOTA_FIXTURES/code-1113.json" 0
+assert_quota_failure 'HTTP 404 with body code 1113 is quota-exhausted' \
+  quota-exhausted 1113
+quota_case 429 "$QUOTA_FIXTURES/not-json.txt" 0
+assert_quota_failure 'HTTP 429 with a text body stays provider-transient' \
+  provider-transient ''
 
 # Row 4: a provider error inside the body reuses classify_error_kind.
 quota_case 200 "$QUOTA_FIXTURES/code-1001.json" 0
@@ -2406,6 +2437,12 @@ assert_quota_failure 'trailing garbage after the JSON is invalid-response' \
 quota_case 200 "$QUOTA_FIXTURES/bom.json" 0
 assert_eq 'a BOM-prefixed response is accepted' "0|$expected_quota_ok" \
   "$RC|$OUTPUT"
+
+# The success check is numeric: code 200.0 is still code 200.
+quota_case 200 "$QUOTA_FIXTURES/code-200-float.json" 0
+assert_eq 'body code 200.0 counts as success' \
+  "0|$(printf '%s\n' "$expected_quota_ok" | sed -n '1p')" \
+  "$RC|$(printf '%s\n' "$OUTPUT" | sed -n '1p')"
 
 assert_eq 'failures leave exactly the two raw artifacts' \
   $'response.json\nstderr.log' "$(ls -A "$QUOTA_HOME/quota")"

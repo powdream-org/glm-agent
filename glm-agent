@@ -2210,6 +2210,17 @@ quota_private_dir() {
   chmod 700 "$1" || die "cannot set directory permissions: $1"
 }
 
+# An HTTP status row names a default kind. A body code that classify_error_kind
+# recognises overrides it; an unrecognised or missing code keeps the default.
+quota_http_error_kind() {
+  local kind
+  kind="$(classify_error_kind "$1" "$2")"
+  if [[ "$kind" == provider-error ]]; then
+    kind="$2"
+  fi
+  printf '%s\n' "$kind"
+}
+
 cmd_quota() {
   (($# == 0)) || die "quota does not accept arguments"
   require_command curl
@@ -2255,37 +2266,35 @@ cmd_quota() {
 
   # A body counts as JSON only when it is exactly one object; trailing
   # garbage, a second document, or an empty body all fail the check.
-  local body_ok=0 api_code="" api_success="" limits_kind="" provider_code=""
+  local body_ok=0 api_ok="" limits_kind="" provider_code=""
   local fields
   if jq -e -s 'length == 1 and (.[0] | type) == "object"' \
     "$response_tmp" >/dev/null 2>&1 &&
     fields="$(jq -r '
-      ((.code | numbers | tostring) // ""),
-      (if .success == true then "true" else "false" end),
+      (if (.code | type) == "number" and .code != 200
+        then (.code | tostring) else "" end),
+      (if .code == 200 and .success == true then "true" else "false" end),
       ((((.data | objects | .limits) // null) | type)
         | if . == "array" then "array" else "other" end)
     ' "$response_tmp")"; then
     body_ok=1
     {
-      IFS= read -r api_code
-      IFS= read -r api_success
+      IFS= read -r provider_code
+      IFS= read -r api_ok
       IFS= read -r limits_kind
     } <<<"$fields"
-    if [[ "$api_code" != 200 ]]; then
-      provider_code="$api_code"
-    fi
   fi
 
-  # Each branch is one row of the ERROR_KIND table; the first match wins.
+  # Each branch is one row of the ERROR_KIND table; the first match wins. The
+  # HTTP 401/403 and 429/5xx rows still defer to a recognised body code.
   local error_kind=""
   if ((curl_status != 0)); then
     error_kind='provider-transient'
   elif [[ "$http_code" == 401 || "$http_code" == 403 ]]; then
-    error_kind='authentication'
+    error_kind="$(quota_http_error_kind "$provider_code" authentication)"
   elif [[ "$http_code" == 429 || "$http_code" == 5?? ]]; then
-    error_kind='provider-transient'
-  elif ((body_ok == 1)) &&
-    [[ "$api_code" != 200 || "$api_success" != true ]]; then
+    error_kind="$(quota_http_error_kind "$provider_code" provider-transient)"
+  elif ((body_ok == 1)) && [[ "$api_ok" != true ]]; then
     error_kind="$(classify_error_kind "$provider_code" provider-error)"
   elif [[ "$http_code" == 200 ]] &&
     { ((body_ok == 0)) || [[ "$limits_kind" != array ]]; }; then
