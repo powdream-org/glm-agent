@@ -2191,6 +2191,18 @@ else
   assert_contains 'quota names the unreadable key file' "$STDERR" \
     "$quota_unreadable_home/.env.auth"
 fi
+# load_api_key is shared, so start reports the same setup error.
+if [[ "$(id -u)" == 0 ]]; then
+  pass 'start unreadable key file (skipped: root ignores file modes)'
+  pass 'start names the unreadable key file (skipped: root)'
+else
+  capture env -u ZAI_API_KEY GLM_AGENT_HOME="$quota_unreadable_home" \
+    "$SCRIPT" start --cwd "$PROJECT" 'unreadable key task'
+  assert_eq 'start with an unreadable key file is a setup error' \
+    '2|' "$RC|$OUTPUT"
+  assert_contains 'start names the unreadable key file' "$STDERR" \
+    "$quota_unreadable_home/.env.auth"
+fi
 chmod 600 "$quota_unreadable_home/.env.auth"
 
 # A fake mktemp that fails only for the second temp file, a fake mv that
