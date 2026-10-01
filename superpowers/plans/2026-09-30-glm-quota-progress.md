@@ -72,3 +72,11 @@
   - 테스트: fake `curl` PATH 주입(네트워크 없음), test_plugin.sh에 SKILL.md 계약(명령 문자열 = allowed-tools 규칙) 추가
   - 문서·버전: `--help`·README·AGENTS.md layout(`skills/`) 동기화, `scripts/bump-version.sh 0.5.0`. push·merge·재설치는 별도 승인.
   - 후속(범위 밖): my-superpowers §6에 "dispatch 전 `glm-agent:quota`" 한 줄 추가 — description만으로는 호출 보장 없음
+
+## 산출물
+
+- 2026-10-01 spec 초안: `superpowers/specs/2026-10-01-glm-quota-design.md` — tech-writer 1석(model sonnet)
+  - 좌석 비용(완료 알림 기준): subagent_tokens 163,836 / tool_uses 57 / 688s. **spec 1편에 과다.** 원인(추정): tech-writer의 자체 checker·reflow 반복. 다음 문서 좌석은 설계가 확정됐으면 checker 반복 금지를 브리프에 명시하거나, 수정량이 작으면 메인이 직접 고친다.
+  - 메인 재확인: `wc -l` 310행, 절 1~11 존재, TBD/TODO 0, 일본어 0, 5.1 stdout 예시 = 원장 값. 1~4절 원장 대조 일치.
+  - 메인 self-review 수정(좌석의 "확인 필요" 5건 + 자체 발견): ① 실패 stdout 4행과 순서 확정 ② `stderr.log` 보관·`RESPONSE` 항상 출력 ③ skill `description` 원문 기입 ④ ERROR_KIND 판정 우선순위 6행 확정 — HTTP 429 추가, provider code는 **기존 `classify_error_kind` 재사용**(1113 등 → `quota-exhausted`) ⑤ 판정표에 `INVALID+quota-exhausted` → native·session latch 행 추가, 미지 창 행을 주석으로 바꿔 "처음 일치 행" 규칙과의 충돌 제거 ⑥ `ZAI_BASE_URL` 기본값·형식 검증(exit 2) ⑦ exit 2 사례·테스트 표 구체화, skill 계약에 description·핵심어 검사 추가
+  - ④⑤⑥은 User 승인 설계에 없던 확정이다 → spec 리뷰에서 User 확인 대상
