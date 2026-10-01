@@ -222,6 +222,32 @@ if [[ -f "$general_agent" ]]; then
     "$general_content" 'BRIDGE_STATUS=INVALID_REQUEST'
 fi
 
+quota_skill="$REPO_DIR/skills/quota/SKILL.md"
+assert_file 'quota skill exists' "$quota_skill"
+if [[ -f "$quota_skill" ]]; then
+  skill_frontmatter="$(sed -n '2,/^---$/p' "$quota_skill")"
+  skill_body="$(sed '1,/^---$/d' "$quota_skill")"
+  skill_allowed="$(printf '%s\n' "$skill_frontmatter" |
+    sed -n 's/^allowed-tools: //p')"
+  skill_rule_command="${skill_allowed#Bash(}"
+  skill_rule_command="${skill_rule_command%)}"
+  assert_eq 'quota skill name' 'quota' \
+    "$(printf '%s\n' "$skill_frontmatter" | sed -n 's/^name: //p')"
+  assert_eq 'quota skill description' \
+    'Use before dispatching work to glm-agent:explorer or glm-agent:general-purpose, and before returning to GLM after a quota-exhausted fallback, to read the remaining Z.ai GLM Coding Plan quota and choose between a GLM worker and native Claude.' \
+    "$(printf '%s\n' "$skill_frontmatter" | sed -n 's/^description: //p')"
+  assert_eq 'quota skill allows exactly the quota command' \
+    "Bash(bash \"\${CLAUDE_PLUGIN_ROOT}/glm-agent\" quota)" "$skill_allowed"
+  assert_contains 'quota skill body runs the allowed command' \
+    "$skill_body" "$skill_rule_command"
+  for keyword in QUOTA_STATUS authentication quota-exhausted fail-open \
+    'REMAINING=0' RESET_AT USED_PERCENT 'USED_PERCENT>=90' \
+    'USED_PERCENT>=98' TIME_LIMIT; do
+    assert_contains "quota skill decision table mentions $keyword" \
+      "$skill_body" "$keyword"
+  done
+fi
+
 if command -v claude >/dev/null 2>&1 &&
    [[ -f "$plugin_json" && -f "$marketplace_json" &&
       -f "$explorer_agent" && -f "$general_agent" ]]; then
