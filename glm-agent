@@ -2104,6 +2104,100 @@ cmd_close() {
   printf 'CLOSED=true\n'
 }
 
+QUOTA_ENDPOINT_PATH='/api/monitor/usage/quota/limit'
+
+# jq program for a successful quota response. It prints KEY=VALUE lines;
+# missing numbers print empty and server strings lose control characters.
+quota_render_jq() {
+  cat <<'JQ'
+def str:
+  if type == "string" then gsub("[[:cntrl:]]"; " ")
+  elif type == "number" or type == "boolean" then tostring
+  else "" end;
+def num: if type == "number" then tostring else "" end;
+def window:
+  if (.unit | type) == "number" and (.number | type) == "number" then
+    if .unit == 3 then "\(.number)h"
+    elif .unit == 6 then "\(.number)w"
+    else "u\(.unit)x\(.number)" end
+  else "" end;
+def reset_at:
+  if (.nextResetTime | type) == "number"
+  then (try (.nextResetTime / 1000 | floor | todate) catch "")
+  else "" end;
+.data as $data
+| ($data.limits | length) as $count
+| "QUOTA_STATUS=OK",
+  "PLAN_LEVEL=\($data.level | str)",
+  "LIMIT_COUNT=\($count)",
+  (range(0; $count) as $i
+    | ($i + 1) as $n
+    | ($data.limits[$i] | if type == "object" then . else {} end) as $limit
+    | "LIMIT_\($n)_TYPE=\($limit.type | str)",
+      "LIMIT_\($n)_WINDOW=\($limit | window)",
+      "LIMIT_\($n)_TOTAL=\($limit.usage | num)",
+      "LIMIT_\($n)_USED=\($limit.currentValue | num)",
+      "LIMIT_\($n)_REMAINING=\($limit.remaining | num)",
+      "LIMIT_\($n)_USED_PERCENT=\($limit.percentage | num)",
+      "LIMIT_\($n)_RESET_AT=\($limit | reset_at)")
+JQ
+}
+
+quota_endpoint_url() {
+  local base_pattern='^(https?://[A-Za-z0-9.-]+(:[0-9]+)?)(/|$)'
+
+  [[ "$ZAI_BASE_URL" =~ $base_pattern ]] ||
+    die "ZAI_BASE_URL must look like http(s)://host[:port][/path]"
+  printf '%s%s\n' "${BASH_REMATCH[1]}" "$QUOTA_ENDPOINT_PATH"
+}
+
+cmd_quota() {
+  (($# == 0)) || die "quota does not accept arguments"
+  require_command curl
+  require_command jq
+
+  local url
+  url="$(quota_endpoint_url)"
+  load_api_key
+  validate_single_line "API key" "$ZAI_API_KEY"
+
+  ensure_state_home
+  local quota_dir="$GLM_AGENT_HOME/quota"
+  local response_file="$quota_dir/response.json"
+  local stderr_file="$quota_dir/stderr.log"
+  mkdir -p "$quota_dir"
+  chmod 700 "$quota_dir"
+
+  local response_tmp stderr_tmp
+  response_tmp="$(mktemp "$quota_dir/.response.XXXXXX")"
+  stderr_tmp="$(mktemp "$quota_dir/.stderr.XXXXXX")"
+
+  # The key travels only as a header line on curl's stdin (printf is a shell
+  # builtin), so it never appears in any process argument list.
+  local http_code curl_status=0
+  http_code="$(
+    printf 'Authorization: %s\n' "$ZAI_API_KEY" |
+      curl -sS --connect-timeout 5 --max-time 10 \
+        -H @- -H 'Accept-Language: en-US,en' \
+        -o "$response_tmp" -w '%{http_code}' "$url" 2>"$stderr_tmp"
+  )" || curl_status=$?
+
+  if ((curl_status != 0)) || [[ "$http_code" != 200 ]]; then
+    die "quota request failed (curl exit $curl_status, HTTP $http_code)"
+  fi
+
+  local rendered
+  rendered="$(jq -r "$(quota_render_jq)" "$response_tmp")"
+
+  mv -f "$response_tmp" "$response_file"
+  mv -f "$stderr_tmp" "$stderr_file"
+
+  printf '%s\n' "$rendered"
+  printf 'RESPONSE=%s\n' "$response_file"
+  printf 'ERROR_KIND=\n'
+  printf 'PROVIDER_CODE=\n'
+}
+
 main() {
   local command="${1:-}"
 
@@ -2157,6 +2251,10 @@ main() {
     close)
       shift
       cmd_close "$@"
+      ;;
+    quota)
+      shift
+      cmd_quota "$@"
       ;;
     _execute-turn)
       shift

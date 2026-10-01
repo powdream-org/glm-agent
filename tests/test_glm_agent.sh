@@ -1817,6 +1817,299 @@ else
   fail 'missing credential does not create worker state' "unexpected directory: $noauth_home/workers"
 fi
 
+# --- quota: fake curl, fixtures, and helpers --------------------------------
+QUOTA_KEY='zk-quota-test-0123456789abcdef'
+QUOTA_HOME="$TEST_ROOT/quota-home"
+QUOTA_FIXTURES="$TEST_ROOT/quota-fixtures"
+FAKE_CURL_LOG="$TEST_ROOT/curl.argv"
+FAKE_CURL_STDIN="$TEST_ROOT/curl.stdin"
+QUOTA_SEEN=''
+mkdir -p "$QUOTA_FIXTURES"
+
+cat >"$FAKE_BIN/curl" <<'FAKE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Fake curl for glm-agent quota tests: no network access, no real key.
+# It accepts exactly the flags glm-agent quota uses and rejects anything else.
+log="${FAKE_CURL_LOG:?}"
+: >>"$log"
+for arg in "$@"; do
+  printf 'arg=%s\n' "$arg" >>"$log"
+done
+
+output=''
+write_out=''
+url=''
+silent=0
+stdin_header=0
+language_header=0
+while (($# > 0)); do
+  case "$1" in
+    -sS) silent=1; shift ;;
+    --connect-timeout|--max-time) shift 2 ;;
+    -H)
+      case "$2" in
+        @-) stdin_header=1 ;;
+        'Accept-Language: en-US,en') language_header=1 ;;
+        *) printf 'fake curl: unexpected header\n' >&2; exit 99 ;;
+      esac
+      shift 2
+      ;;
+    -o) output="$2"; shift 2 ;;
+    -w) write_out="$2"; shift 2 ;;
+    -*) printf 'fake curl: unexpected option: %s\n' "$1" >&2; exit 99 ;;
+    *) url="$1"; shift ;;
+  esac
+done
+
+if ((silent != 1 || stdin_header != 1 || language_header != 1)) ||
+  [[ -z "$output" || -z "$url" || "$write_out" != '%{http_code}' ]]; then
+  printf 'fake curl: incomplete invocation\n' >&2
+  exit 99
+fi
+
+cat >"${FAKE_CURL_STDIN:?}"
+
+curl_exit="${FAKE_CURL_EXIT:-0}"
+if ((curl_exit != 0)); then
+  printf 'curl: (%s) fake failure\n' "$curl_exit" >&2
+  printf '000'
+  exit "$curl_exit"
+fi
+
+if [[ -n "${FAKE_CURL_BODY_FILE:-}" ]]; then
+  cp "$FAKE_CURL_BODY_FILE" "$output"
+fi
+printf '%s' "${FAKE_CURL_STATUS:-200}"
+FAKE
+chmod +x "$FAKE_BIN/curl"
+
+cat >"$QUOTA_FIXTURES/ok.json" <<'JSON'
+{"code":200,"msg":"Operation successful","data":{"limits":[{"type":"CREDIT_LIMIT","unit":3,"number":5,"usage":2000,"currentValue":1450,"remaining":549,"percentage":72,"nextResetTime":1790791395020},{"type":"CREDIT_LIMIT","unit":6,"number":1,"usage":10000,"currentValue":7974,"remaining":2025,"percentage":79,"nextResetTime":1791162764983}],"level":"lite"},"success":true}
+JSON
+jq '.data.limits[0].remaining = 0' "$QUOTA_FIXTURES/ok.json" \
+  >"$QUOTA_FIXTURES/zero.json"
+jq '.data.limits += [{"type":"TIME_LIMIT","unit":5,"number":1,"usage":1000,"currentValue":20,"remaining":980,"percentage":2,"nextResetTime":1793000000000}]' \
+  "$QUOTA_FIXTURES/ok.json" >"$QUOTA_FIXTURES/time-limit.json"
+jq '.data.limits[0].unit = 9 | .data.limits[0].number = 2' \
+  "$QUOTA_FIXTURES/ok.json" >"$QUOTA_FIXTURES/unknown-window.json"
+jq '.data.limits = []' "$QUOTA_FIXTURES/ok.json" \
+  >"$QUOTA_FIXTURES/empty-limits.json"
+jq 'del(.data.limits[0].remaining, .data.limits[0].nextResetTime) | .data.level = null' \
+  "$QUOTA_FIXTURES/ok.json" >"$QUOTA_FIXTURES/sparse.json"
+jq '.data.level = "li\nQUOTA_STATUS=FORGED"' "$QUOTA_FIXTURES/ok.json" \
+  >"$QUOTA_FIXTURES/control-chars.json"
+
+# quota_case <http-status> <body-file-or-empty> <curl-exit> [VAR=value ...]
+# Runs "glm-agent quota" against the fake curl and records everything printed
+# so the final scan can prove the API key never reached stdout or stderr.
+quota_case() {
+  local status="$1" body="$2" curl_exit="$3"
+  shift 3
+  : >"$FAKE_CURL_LOG"
+  : >"$FAKE_CURL_STDIN"
+  capture env -u ZAI_BASE_URL ZAI_API_KEY="$QUOTA_KEY" \
+    GLM_AGENT_HOME="$QUOTA_HOME" FAKE_CURL_STATUS="$status" \
+    FAKE_CURL_BODY_FILE="$body" FAKE_CURL_EXIT="$curl_exit" \
+    FAKE_CURL_LOG="$FAKE_CURL_LOG" FAKE_CURL_STDIN="$FAKE_CURL_STDIN" \
+    "$@" "$SCRIPT" quota
+  QUOTA_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+}
+
+# make_quota_bin <dir> <tool-to-omit>: a PATH holding only what quota needs.
+make_quota_bin() {
+  local dir="$1" omit="$2" tool
+  mkdir -p "$dir"
+  for tool in dirname mkdir chmod mktemp mv cat jq curl; do
+    if [[ "$tool" != "$omit" ]]; then
+      ln -sf "$(command -v "$tool")" "$dir/$tool"
+    fi
+  done
+}
+
+# --- quota: probe response, request shape, raw artifacts ---------------------
+expected_quota_ok="$(cat <<EOF
+QUOTA_STATUS=OK
+PLAN_LEVEL=lite
+LIMIT_COUNT=2
+LIMIT_1_TYPE=CREDIT_LIMIT
+LIMIT_1_WINDOW=5h
+LIMIT_1_TOTAL=2000
+LIMIT_1_USED=1450
+LIMIT_1_REMAINING=549
+LIMIT_1_USED_PERCENT=72
+LIMIT_1_RESET_AT=2026-09-30T18:03:15Z
+LIMIT_2_TYPE=CREDIT_LIMIT
+LIMIT_2_WINDOW=1w
+LIMIT_2_TOTAL=10000
+LIMIT_2_USED=7974
+LIMIT_2_REMAINING=2025
+LIMIT_2_USED_PERCENT=79
+LIMIT_2_RESET_AT=2026-10-05T01:12:44Z
+RESPONSE=$QUOTA_HOME/quota/response.json
+ERROR_KIND=
+PROVIDER_CODE=
+EOF
+)"
+
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0
+assert_eq 'quota succeeds on the probe response' '0' "$RC"
+assert_eq 'quota prints the documented fields' "$expected_quota_ok" "$OUTPUT"
+assert_eq 'quota stderr is empty on success' '' "$STDERR"
+
+quota_argv="$(cat "$FAKE_CURL_LOG")"
+assert_contains 'quota runs curl silently with errors' "$quota_argv" $'arg=-sS\n'
+assert_contains 'quota bounds connect and total time' "$quota_argv" \
+  $'arg=--connect-timeout\narg=5\narg=--max-time\narg=10\n'
+assert_contains 'quota reads the auth header from stdin' "$quota_argv" \
+  $'arg=-H\narg=@-\n'
+assert_contains 'quota asks for English messages' "$quota_argv" \
+  $'arg=-H\narg=Accept-Language: en-US,en\n'
+assert_contains 'quota prints only the HTTP status on curl stdout' \
+  "$quota_argv" $'arg=-w\narg=%{http_code}\n'
+assert_contains 'quota writes the body inside its own state directory' \
+  "$quota_argv" $'arg=-o\narg='"$QUOTA_HOME/quota/.response."
+assert_eq 'quota targets the monitor endpoint' \
+  'arg=https://api.z.ai/api/monitor/usage/quota/limit' \
+  "$(tail -n 1 "$FAKE_CURL_LOG")"
+assert_not_contains 'quota keeps the API key out of curl argv' \
+  "$quota_argv" "$QUOTA_KEY"
+assert_eq 'quota sends the key only as one stdin header line' \
+  "Authorization: $QUOTA_KEY" "$(cat "$FAKE_CURL_STDIN")"
+
+assert_eq 'quota keeps exactly the two raw artifacts' \
+  $'response.json\nstderr.log' "$(ls -A "$QUOTA_HOME/quota")"
+assert_eq 'quota stores the raw response body' \
+  "$(cat "$QUOTA_FIXTURES/ok.json")" "$(cat "$QUOTA_HOME/quota/response.json")"
+assert_eq 'quota state home stays private' '700' "$(file_mode "$QUOTA_HOME")"
+assert_eq 'quota directory is private' '700' "$(file_mode "$QUOTA_HOME/quota")"
+assert_eq 'quota response file is private' '600' \
+  "$(file_mode "$QUOTA_HOME/quota/response.json")"
+
+quota_case 200 "$QUOTA_FIXTURES/zero.json" 0
+assert_eq 'quota overwrites the raw response on each call' \
+  "$(cat "$QUOTA_FIXTURES/zero.json")" "$(cat "$QUOTA_HOME/quota/response.json")"
+
+# --- quota: field mapping ----------------------------------------------------
+assert_eq 'exhausted window is still a successful lookup' '0' "$RC"
+assert_contains 'quota reports a zero remainder as 0' "$OUTPUT" \
+  $'LIMIT_1_REMAINING=0\n'
+
+quota_case 200 "$QUOTA_FIXTURES/time-limit.json" 0
+assert_eq 'TIME_LIMIT entry keeps the lookup successful' '0' "$RC"
+assert_contains 'quota counts every limit entry' "$OUTPUT" $'LIMIT_COUNT=3\n'
+assert_contains 'quota prints the third entry type verbatim' "$OUTPUT" \
+  $'LIMIT_3_TYPE=TIME_LIMIT\n'
+assert_contains 'quota prints the third entry reset in UTC' "$OUTPUT" \
+  $'LIMIT_3_RESET_AT=2026-10-26T07:33:20Z\n'
+
+quota_case 200 "$QUOTA_FIXTURES/unknown-window.json" 0
+assert_contains 'unknown unit keeps its code and number' "$OUTPUT" \
+  $'LIMIT_1_WINDOW=u9x2\n'
+
+quota_case 200 "$QUOTA_FIXTURES/empty-limits.json" 0
+assert_eq 'empty limits list is still a successful lookup' '0' "$RC"
+assert_contains 'empty limits list reports LIMIT_COUNT=0' "$OUTPUT" \
+  $'LIMIT_COUNT=0\n'
+assert_not_contains 'empty limits list prints no limit lines' "$OUTPUT" \
+  'LIMIT_1_'
+
+quota_case 200 "$QUOTA_FIXTURES/sparse.json" 0
+assert_eq 'limit missing remaining and reset time is still successful' '0' "$RC"
+assert_contains 'missing remaining prints an empty value' "$OUTPUT" \
+  $'LIMIT_1_REMAINING=\n'
+assert_contains 'missing reset time prints an empty value' "$OUTPUT" \
+  $'LIMIT_1_RESET_AT=\nLIMIT_2_TYPE='
+assert_contains 'null plan level prints an empty value' "$OUTPUT" \
+  $'PLAN_LEVEL=\n'
+assert_not_contains 'null and missing fields never print the word null' \
+  "$OUTPUT" 'null'
+
+quota_case 200 "$QUOTA_FIXTURES/control-chars.json" 0
+assert_contains 'server control characters cannot start a new output line' \
+  "$OUTPUT" $'PLAN_LEVEL=li QUOTA_STATUS=FORGED\n'
+assert_eq 'exactly one QUOTA_STATUS line is printed' '1' \
+  "$(printf '%s\n' "$OUTPUT" | grep -c '^QUOTA_STATUS=')"
+
+# --- quota: endpoint follows ZAI_BASE_URL host and port ----------------------
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 \
+  ZAI_BASE_URL=https://example.test:8443/api/anthropic
+assert_eq 'quota keeps scheme host and port and drops the base path' \
+  'arg=https://example.test:8443/api/monitor/usage/quota/limit' \
+  "$(tail -n 1 "$FAKE_CURL_LOG")"
+
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 ZAI_BASE_URL=http://127.0.0.1:9000
+assert_eq 'quota accepts a base URL with a port and no path' \
+  'arg=http://127.0.0.1:9000/api/monitor/usage/quota/limit' \
+  "$(tail -n 1 "$FAKE_CURL_LOG")"
+
+# --- quota: usage and configuration errors (exit 2, empty stdout) ------------
+capture env ZAI_API_KEY="$QUOTA_KEY" GLM_AGENT_HOME="$QUOTA_HOME" \
+  "$SCRIPT" quota extra
+assert_eq 'quota rejects extra arguments' '2|' "$RC|$OUTPUT"
+assert_contains 'quota argument error is clear' "$STDERR" \
+  'quota does not accept arguments'
+
+for bad_key in $'abc\rdef' $'abc\ndef'; do
+  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 ZAI_API_KEY="$bad_key"
+  assert_eq 'multi-line API key is rejected before curl runs' \
+    '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
+  assert_contains 'multi-line API key error names the problem' "$STDERR" \
+    'API key must be a single line'
+done
+
+for bad_url in 'ftp://example.test' 'example.test/x' \
+  'https://user@example.test/x' 'https://example.test:8a/x' \
+  'https://example.test?x=1'; do
+  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 ZAI_BASE_URL="$bad_url"
+  assert_eq "ZAI_BASE_URL [$bad_url] is rejected before curl runs" \
+    '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
+done
+
+nokey_home="$TEST_ROOT/quota-nokey-home"
+capture env -u ZAI_API_KEY GLM_AGENT_HOME="$nokey_home" "$SCRIPT" quota
+assert_eq 'quota without a key is a configuration error' '2|' "$RC|$OUTPUT"
+assert_contains 'quota key error gives the setup instruction' "$STDERR" \
+  'Run: glm-agent api-key'
+if [[ ! -e "$nokey_home" ]]; then
+  pass 'quota without a key creates no state'
+else
+  fail 'quota without a key creates no state' "unexpected path: $nokey_home"
+fi
+
+emptykey_home="$TEST_ROOT/quota-emptykey-home"
+mkdir -p "$emptykey_home"
+: >"$emptykey_home/.env.auth"
+capture env -u ZAI_API_KEY GLM_AGENT_HOME="$emptykey_home" "$SCRIPT" quota
+assert_eq 'quota with an empty stored key is a configuration error' \
+  '2|' "$RC|$OUTPUT"
+assert_contains 'quota empty key error is clear' "$STDERR" \
+  'stored API key is empty'
+
+make_quota_bin "$TEST_ROOT/quota-bin-no-curl" curl
+capture env PATH="$TEST_ROOT/quota-bin-no-curl" ZAI_API_KEY="$QUOTA_KEY" \
+  GLM_AGENT_HOME="$QUOTA_HOME" "$BASH" "$SCRIPT" quota
+assert_eq 'quota without curl is a dependency error' '2|' "$RC|$OUTPUT"
+assert_contains 'quota names the missing curl' "$STDERR" \
+  'required command not found: curl'
+
+make_quota_bin "$TEST_ROOT/quota-bin-no-jq" jq
+capture env PATH="$TEST_ROOT/quota-bin-no-jq" ZAI_API_KEY="$QUOTA_KEY" \
+  GLM_AGENT_HOME="$QUOTA_HOME" "$BASH" "$SCRIPT" quota
+assert_eq 'quota without jq is a dependency error' '2|' "$RC|$OUTPUT"
+assert_contains 'quota names the missing jq' "$STDERR" \
+  'required command not found: jq'
+
+# --- quota: the API key is never printed or stored ---------------------------
+assert_not_contains 'quota success and configuration cases never print the key' \
+  "$QUOTA_SEEN" "$QUOTA_KEY"
+if grep -rqF -- "$QUOTA_KEY" "$QUOTA_HOME"; then
+  fail 'quota state files never contain the key' "key found under $QUOTA_HOME"
+else
+  pass 'quota state files never contain the key'
+fi
+
 printf '1..%d\n' "$tests"
 if ((failures > 0)); then
   printf '# %d test(s) failed\n' "$failures" >&2
