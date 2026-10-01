@@ -80,3 +80,4 @@
   - 메인 재확인: `wc -l` 310행, 절 1~11 존재, TBD/TODO 0, 일본어 0, 5.1 stdout 예시 = 원장 값. 1~4절 원장 대조 일치.
   - 메인 self-review 수정(좌석의 "확인 필요" 5건 + 자체 발견): ① 실패 stdout 4행과 순서 확정 ② `stderr.log` 보관·`RESPONSE` 항상 출력 ③ skill `description` 원문 기입 ④ ERROR_KIND 판정 우선순위 6행 확정 — HTTP 429 추가, provider code는 **기존 `classify_error_kind` 재사용**(1113 등 → `quota-exhausted`) ⑤ 판정표에 `INVALID+quota-exhausted` → native·session latch 행 추가, 미지 창 행을 주석으로 바꿔 "처음 일치 행" 규칙과의 충돌 제거 ⑥ `ZAI_BASE_URL` 기본값·형식 검증(exit 2) ⑦ exit 2 사례·테스트 표 구체화, skill 계약에 description·핵심어 검사 추가
   - ④⑤⑥은 User 승인 설계에 없던 확정이다 → spec 리뷰에서 User 확인 대상
+- 2026-10-01 spec `superpowers/specs/2026-10-01-glm-quota-design.md` (`1b52a0a`) **User 승인** ("승인"). 메인 self-review로 추가한 ④ERROR_KIND 우선순위·`classify_error_kind` 재사용 ⑤`INVALID+quota-exhausted` 행 ⑥`ZAI_BASE_URL` 검증, 그리고 기준치 도달 시 단계형 해석까지 함께 승인된 것으로 기록한다. 다음 단계: `superpowers:writing-plans`.
