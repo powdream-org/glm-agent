@@ -81,3 +81,6 @@
   - 메인 self-review 수정(좌석의 "확인 필요" 5건 + 자체 발견): ① 실패 stdout 4행과 순서 확정 ② `stderr.log` 보관·`RESPONSE` 항상 출력 ③ skill `description` 원문 기입 ④ ERROR_KIND 판정 우선순위 6행 확정 — HTTP 429 추가, provider code는 **기존 `classify_error_kind` 재사용**(1113 등 → `quota-exhausted`) ⑤ 판정표에 `INVALID+quota-exhausted` → native·session latch 행 추가, 미지 창 행을 주석으로 바꿔 "처음 일치 행" 규칙과의 충돌 제거 ⑥ `ZAI_BASE_URL` 기본값·형식 검증(exit 2) ⑦ exit 2 사례·테스트 표 구체화, skill 계약에 description·핵심어 검사 추가
   - ④⑤⑥은 User 승인 설계에 없던 확정이다 → spec 리뷰에서 User 확인 대상
 - 2026-10-01 spec `superpowers/specs/2026-10-01-glm-quota-design.md` (`1b52a0a`) **User 승인** ("승인"). 메인 self-review로 추가한 ④ERROR_KIND 우선순위·`classify_error_kind` 재사용 ⑤`INVALID+quota-exhausted` 행 ⑥`ZAI_BASE_URL` 검증, 그리고 기준치 도달 시 단계형 해석까지 함께 승인된 것으로 기록한다. 다음 단계: `superpowers:writing-plans`.
+- 2026-10-01 plan 좌석 입력 준비: 메인 스크립트로 발췌 파일 `<scratchpad>/facts-plan.md` 생성 — 955행, 16절(glm-agent 1-260·928-942·1516-1549·2107-끝, test_glm_agent.sh 1-30·296-400·끝 46행, test_plugin.sh 1-130·끝 31행, README Commands·Security·Development, AGENTS.md 1-40, bump-version.sh 1-40, plugin.json, probe fixture 원문)
+  - GAPS(의도적 제외): test_glm_agent.sh 31-295(fake claude 본문)·401-(끝-46)(기존 케이스). fake curl은 신규라 불필요.
+  - 좌석: general-purpose 1석(model sonnet), 출력 `superpowers/plans/2026-10-01-glm-quota-implementation.md`, 외부 읽기 상한 5회, checker 반복 금지
