@@ -273,7 +273,8 @@ load_api_key() {
   [[ -f "$AUTH_FILE" ]] ||
     die "API key is not configured. Run: $PROGRAM api-key"
 
-  ZAI_API_KEY="$(<"$AUTH_FILE")"
+  ZAI_API_KEY="$(<"$AUTH_FILE")" ||
+    die "cannot read the stored API key: $AUTH_FILE"
   [[ -n "$ZAI_API_KEY" ]] || die "stored API key is empty"
 }
 
@@ -2187,6 +2188,28 @@ quota_endpoint_url() {
   printf '%s%s\n' "${BASH_REMATCH[1]}" "$QUOTA_ENDPOINT_PATH"
 }
 
+# Temp files of the lookup in flight; the traps below remove them.
+QUOTA_RESPONSE_TMP=""
+QUOTA_STDERR_TMP=""
+
+quota_cleanup() {
+  [[ -z "$QUOTA_RESPONSE_TMP" ]] || rm -f -- "$QUOTA_RESPONSE_TMP"
+  [[ -z "$QUOTA_STDERR_TMP" ]] || rm -f -- "$QUOTA_STDERR_TMP"
+}
+
+quota_signal_exit() {
+  trap - INT TERM EXIT
+  quota_cleanup
+  exit "$1"
+}
+
+# Every state-directory failure must end as a setup error (exit 2); a bare
+# mkdir or chmod failure would exit 1 without a QUOTA_STATUS line.
+quota_private_dir() {
+  mkdir -p "$1" || die "cannot create directory: $1"
+  chmod 700 "$1" || die "cannot set directory permissions: $1"
+}
+
 cmd_quota() {
   (($# == 0)) || die "quota does not accept arguments"
   require_command curl
@@ -2197,16 +2220,22 @@ cmd_quota() {
   load_api_key
   validate_single_line "API key" "$ZAI_API_KEY"
 
-  ensure_state_home
   local quota_dir="$GLM_AGENT_HOME/quota"
   local response_file="$quota_dir/response.json"
   local stderr_file="$quota_dir/stderr.log"
-  mkdir -p "$quota_dir"
-  chmod 700 "$quota_dir"
+  quota_private_dir "$GLM_AGENT_HOME"
+  quota_private_dir "$quota_dir"
 
+  trap quota_cleanup EXIT
+  trap 'quota_signal_exit 130' INT
+  trap 'quota_signal_exit 143' TERM
   local response_tmp stderr_tmp
-  response_tmp="$(mktemp "$quota_dir/.response.XXXXXX")"
-  stderr_tmp="$(mktemp "$quota_dir/.stderr.XXXXXX")"
+  response_tmp="$(mktemp "$quota_dir/.response.XXXXXX")" ||
+    die "cannot create a temporary file in $quota_dir"
+  QUOTA_RESPONSE_TMP="$response_tmp"
+  stderr_tmp="$(mktemp "$quota_dir/.stderr.XXXXXX")" ||
+    die "cannot create a temporary file in $quota_dir"
+  QUOTA_STDERR_TMP="$stderr_tmp"
 
   # The key travels only as a header line on curl's stdin (printf is a shell
   # builtin), so it never appears in any process argument list. -q must come
@@ -2227,16 +2256,16 @@ cmd_quota() {
   # A body counts as JSON only when it is exactly one object; trailing
   # garbage, a second document, or an empty body all fail the check.
   local body_ok=0 api_code="" api_success="" limits_kind="" provider_code=""
+  local fields
   if jq -e -s 'length == 1 and (.[0] | type) == "object"' \
-    "$response_tmp" >/dev/null 2>&1; then
-    body_ok=1
-    local fields
+    "$response_tmp" >/dev/null 2>&1 &&
     fields="$(jq -r '
       ((.code | numbers | tostring) // ""),
       (if .success == true then "true" else "false" end),
       ((((.data | objects | .limits) // null) | type)
         | if . == "array" then "array" else "other" end)
-    ' "$response_tmp")"
+    ' "$response_tmp")"; then
+    body_ok=1
     {
       IFS= read -r api_code
       IFS= read -r api_success
@@ -2271,8 +2300,10 @@ cmd_quota() {
     error_kind='invalid-response'
   fi
 
-  mv -f "$response_tmp" "$response_file"
-  mv -f "$stderr_tmp" "$stderr_file"
+  mv -f "$response_tmp" "$response_file" ||
+    die "cannot store the quota response: $response_file"
+  mv -f "$stderr_tmp" "$stderr_file" ||
+    die "cannot store the curl stderr: $stderr_file"
 
   if [[ -n "$error_kind" ]]; then
     printf 'QUOTA_STATUS=INVALID\n'

@@ -1897,6 +1897,14 @@ fi
 
 cat >"${FAKE_CURL_STDIN:?}"
 
+if [[ -n "${FAKE_CURL_BLOCK_STARTED:-}" ]]; then
+  : >"$FAKE_CURL_BLOCK_STARTED"
+  for _ in {1..500}; do
+    [[ -f "${FAKE_CURL_BLOCK_RELEASE:?}" ]] && break
+    sleep 0.01
+  done
+fi
+
 curl_exit="${FAKE_CURL_EXIT:-0}"
 if ((curl_exit != 0)); then
   printf 'curl: (%s) fake failure\n' "$curl_exit" >&2
@@ -1927,9 +1935,14 @@ jq 'del(.data.limits[0].remaining, .data.limits[0].nextResetTime) | .data.level 
 jq '.data.level = "li\nQUOTA_STATUS=FORGED"' "$QUOTA_FIXTURES/ok.json" \
   >"$QUOTA_FIXTURES/control-chars.json"
 
+# quota_record: remember what the last run printed so the key scans can prove
+# the API key never reached stdout or stderr. Every quota run must call it.
+quota_record() {
+  QUOTA_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+}
+
 # quota_case <http-status> <body-file-or-empty> <curl-exit> [VAR=value ...]
-# Runs "glm-agent quota" against the fake curl and records everything printed
-# so the final scan can prove the API key never reached stdout or stderr.
+# Runs "glm-agent quota" against the fake curl and records the run.
 quota_case() {
   local status="$1" body="$2" curl_exit="$3"
   shift 3
@@ -1940,7 +1953,7 @@ quota_case() {
     FAKE_CURL_BODY_FILE="$body" FAKE_CURL_EXIT="$curl_exit" \
     FAKE_CURL_LOG="$FAKE_CURL_LOG" FAKE_CURL_STDIN="$FAKE_CURL_STDIN" \
     "$@" "$SCRIPT" quota
-  QUOTA_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+  quota_record
 }
 
 # make_quota_bin <dir> <tool-to-omit>: a PATH holding only what quota needs.
@@ -2075,11 +2088,12 @@ assert_eq 'quota accepts a base URL with a port and no path' \
 # --- quota: usage and configuration errors (exit 2, empty stdout) ------------
 capture env ZAI_API_KEY="$QUOTA_KEY" GLM_AGENT_HOME="$QUOTA_HOME" \
   "$SCRIPT" quota extra
+quota_record
 assert_eq 'quota rejects extra arguments' '2|' "$RC|$OUTPUT"
 assert_contains 'quota argument error is clear' "$STDERR" \
   'quota does not accept arguments'
 
-for bad_key in $'abc\rdef' $'abc\ndef'; do
+for bad_key in "$QUOTA_KEY"$'\rtail' "$QUOTA_KEY"$'\ntail'; do
   quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 ZAI_API_KEY="$bad_key"
   assert_eq 'multi-line API key is rejected before curl runs' \
     '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
@@ -2097,6 +2111,7 @@ done
 
 nokey_home="$TEST_ROOT/quota-nokey-home"
 capture env -u ZAI_API_KEY GLM_AGENT_HOME="$nokey_home" "$SCRIPT" quota
+quota_record
 assert_eq 'quota without a key is a configuration error' '2|' "$RC|$OUTPUT"
 assert_contains 'quota key error gives the setup instruction' "$STDERR" \
   'Run: glm-agent api-key'
@@ -2110,6 +2125,7 @@ emptykey_home="$TEST_ROOT/quota-emptykey-home"
 mkdir -p "$emptykey_home"
 : >"$emptykey_home/.env.auth"
 capture env -u ZAI_API_KEY GLM_AGENT_HOME="$emptykey_home" "$SCRIPT" quota
+quota_record
 assert_eq 'quota with an empty stored key is a configuration error' \
   '2|' "$RC|$OUTPUT"
 assert_contains 'quota empty key error is clear' "$STDERR" \
@@ -2118,6 +2134,7 @@ assert_contains 'quota empty key error is clear' "$STDERR" \
 make_quota_bin "$TEST_ROOT/quota-bin-no-curl" curl
 capture env PATH="$TEST_ROOT/quota-bin-no-curl" ZAI_API_KEY="$QUOTA_KEY" \
   GLM_AGENT_HOME="$QUOTA_HOME" "$BASH" "$SCRIPT" quota
+quota_record
 assert_eq 'quota without curl is a dependency error' '2|' "$RC|$OUTPUT"
 assert_contains 'quota names the missing curl' "$STDERR" \
   'required command not found: curl'
@@ -2125,9 +2142,140 @@ assert_contains 'quota names the missing curl' "$STDERR" \
 make_quota_bin "$TEST_ROOT/quota-bin-no-jq" jq
 capture env PATH="$TEST_ROOT/quota-bin-no-jq" ZAI_API_KEY="$QUOTA_KEY" \
   GLM_AGENT_HOME="$QUOTA_HOME" "$BASH" "$SCRIPT" quota
+quota_record
 assert_eq 'quota without jq is a dependency error' '2|' "$RC|$OUTPUT"
 assert_contains 'quota names the missing jq' "$STDERR" \
   'required command not found: jq'
+
+# --- quota: state and temp-file failures are setup errors (exit 2) ------------
+# No exit path may end with status 1 and no QUOTA_STATUS line.
+quota_ro_parent="$TEST_ROOT/quota-ro"
+quota_ro_home="$quota_ro_parent/home"
+mkdir -p "$quota_ro_parent"
+chmod 500 "$quota_ro_parent"
+if [[ "$(id -u)" == 0 ]]; then
+  pass 'quota unwritable state home (skipped: root ignores directory modes)'
+  pass 'quota names the unwritable state home (skipped: root)'
+else
+  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$quota_ro_home"
+  assert_eq 'quota with an unwritable state home is a setup error' \
+    '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
+  assert_contains 'quota names the unwritable state home' "$STDERR" \
+    "$quota_ro_home"
+fi
+chmod 700 "$quota_ro_parent"
+
+quota_blocked_home="$TEST_ROOT/quota-blocked-home"
+mkdir -p "$quota_blocked_home"
+: >"$quota_blocked_home/quota"
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$quota_blocked_home"
+assert_eq 'quota with a file in place of its directory is a setup error' \
+  '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
+assert_contains 'quota names the blocked quota directory' "$STDERR" \
+  "$quota_blocked_home/quota"
+
+quota_unreadable_home="$TEST_ROOT/quota-unreadable-key-home"
+mkdir -p "$quota_unreadable_home"
+printf '%s' "$QUOTA_KEY" >"$quota_unreadable_home/.env.auth"
+chmod 000 "$quota_unreadable_home/.env.auth"
+if [[ "$(id -u)" == 0 ]]; then
+  pass 'quota unreadable key file (skipped: root ignores file modes)'
+  pass 'quota names the unreadable key file (skipped: root)'
+else
+  capture env -u ZAI_API_KEY GLM_AGENT_HOME="$quota_unreadable_home" \
+    "$SCRIPT" quota
+  quota_record
+  assert_eq 'quota with an unreadable key file is a setup error' \
+    '2|' "$RC|$OUTPUT"
+  assert_contains 'quota names the unreadable key file' "$STDERR" \
+    "$quota_unreadable_home/.env.auth"
+fi
+chmod 600 "$quota_unreadable_home/.env.auth"
+
+# A fake mktemp that fails only for the second temp file, a fake mv that
+# always fails, and a fake jq that fails on one chosen call.
+quota_real_mktemp="$(command -v mktemp)"
+quota_real_jq="$(command -v jq)"
+quota_mktemp_bin="$TEST_ROOT/quota-bin-mktemp-fails"
+quota_mv_bin="$TEST_ROOT/quota-bin-mv-fails"
+quota_jq_bin="$TEST_ROOT/quota-bin-jq-fails"
+mkdir -p "$quota_mktemp_bin" "$quota_mv_bin" "$quota_jq_bin"
+cat >"$quota_mktemp_bin/mktemp" <<EOF
+#!/bin/sh
+case "\$1" in
+  */.stderr.*) exit 1 ;;
+esac
+exec "$quota_real_mktemp" "\$@"
+EOF
+printf '#!/bin/sh\nexit 1\n' >"$quota_mv_bin/mv"
+cat >"$quota_jq_bin/jq" <<EOF
+#!/bin/sh
+count_file="\${FAKE_JQ_COUNT:?}"
+count=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "\$count" >"\$count_file"
+[ "\$count" = "\${FAKE_JQ_FAIL_CALL:?}" ] && exit 5
+exec "$quota_real_jq" "\$@"
+EOF
+chmod +x "$quota_mktemp_bin/mktemp" "$quota_mv_bin/mv" "$quota_jq_bin/jq"
+
+quota_mktemp_home="$TEST_ROOT/quota-mktemp-home"
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$quota_mktemp_home" \
+  PATH="$quota_mktemp_bin:$PATH"
+assert_eq 'quota with a failing mktemp is a setup error' \
+  '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
+assert_contains 'quota names the directory it cannot write a temp file in' \
+  "$STDERR" "$quota_mktemp_home/quota"
+assert_eq 'a failing mktemp leaves no temp file behind' '' \
+  "$(ls -A "$quota_mktemp_home/quota")"
+
+quota_mv_home="$TEST_ROOT/quota-mv-home"
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$quota_mv_home" \
+  PATH="$quota_mv_bin:$PATH"
+assert_eq 'quota with a failing mv is a setup error' '2|' "$RC|$OUTPUT"
+assert_contains 'quota names the artifact it cannot store' "$STDERR" \
+  "$quota_mv_home/quota/response.json"
+assert_eq 'a failing mv leaves no temp file behind' '' \
+  "$(ls -A "$quota_mv_home/quota")"
+
+# A jq failure after curl returned still ends in a full INVALID block.
+for jq_fail_call in 2 3; do
+  : >"$TEST_ROOT/quota-jq.count"
+  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 PATH="$quota_jq_bin:$PATH" \
+    GLM_AGENT_HOME="$TEST_ROOT/quota-jq-home" \
+    FAKE_JQ_COUNT="$TEST_ROOT/quota-jq.count" FAKE_JQ_FAIL_CALL="$jq_fail_call"
+  assert_eq "jq failing on call $jq_fail_call is invalid-response" \
+    "1|QUOTA_STATUS=INVALID|invalid-response" \
+    "$RC|$(printf '%s\n' "$OUTPUT" | sed -n '1p')|$(printf '%s\n' "$OUTPUT" | sed -n 's/^ERROR_KIND=//p')"
+done
+
+# TERM during the lookup removes the temp files and exits 143. Bash runs a trap
+# only after its foreground command ends, so the fake curl is released after
+# the signal; a real interrupt also stops curl itself.
+quota_term_home="$TEST_ROOT/quota-term-home"
+quota_term_started="$TEST_ROOT/quota-term.started"
+quota_term_release="$TEST_ROOT/quota-term.release"
+: >"$FAKE_CURL_LOG"
+: >"$FAKE_CURL_STDIN"
+env -u ZAI_BASE_URL ZAI_API_KEY="$QUOTA_KEY" GLM_AGENT_HOME="$quota_term_home" \
+  FAKE_CURL_STATUS=200 FAKE_CURL_BODY_FILE="$QUOTA_FIXTURES/ok.json" \
+  FAKE_CURL_EXIT=0 FAKE_CURL_LOG="$FAKE_CURL_LOG" \
+  FAKE_CURL_STDIN="$FAKE_CURL_STDIN" \
+  FAKE_CURL_BLOCK_STARTED="$quota_term_started" \
+  FAKE_CURL_BLOCK_RELEASE="$quota_term_release" \
+  "$SCRIPT" quota >"$TEST_ROOT/quota-term.out" 2>"$TEST_ROOT/quota-term.err" &
+quota_term_pid=$!
+for _ in {1..500}; do
+  [[ -f "$quota_term_started" ]] && break
+  sleep 0.01
+done
+kill -TERM "$quota_term_pid" 2>/dev/null || true
+: >"$quota_term_release"
+if wait "$quota_term_pid"; then quota_term_rc=0; else quota_term_rc=$?; fi
+assert_eq 'TERM during a quota lookup exits 143' '143' "$quota_term_rc"
+assert_eq 'TERM during a quota lookup prints nothing' '' \
+  "$(cat "$TEST_ROOT/quota-term.out")$(cat "$TEST_ROOT/quota-term.err")"
+assert_eq 'TERM during a quota lookup leaves no temp file behind' '' \
+  "$(ls -A "$quota_term_home/quota")"
 
 # --- quota: the API key is never printed or stored ---------------------------
 assert_not_contains 'quota success and configuration cases never print the key' \
