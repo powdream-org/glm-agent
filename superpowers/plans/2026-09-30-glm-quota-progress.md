@@ -135,3 +135,5 @@
 - 2026-10-01 통합 전 검증(HEAD `ae9f4f5`): `test_glm_agent.sh` → `# all 532 tests passed`, `test_plugin.sh` → `# all 89 tests passed`, `claude plugin validate --strict .` → `✔ Validation passed`, `git status --short` 0줄
 - 환경: named-branch worktree(`GIT_DIR=.git/worktrees/glm-quota` ≠ `GIT_COMMON=.git`), 브랜치 `feat/glm-quota`. `git fetch origin` 후 `origin/main` = `25516ba` = merge-base(움직이지 않음). `origin/main..HEAD` 27 commits.
 - 통합 방식 User 결정 대기
+- 2026-10-01 User 결정: "main에 푸쉬" → Option 1(로컬 merge) + `origin/main` push. primary 클론(`main`, clean, `25516ba`)에서 `git merge --ff-only feat/glm-quota` → `main` = `c907286`(fast-forward, linear 유지). merged 결과 검증: `test_glm_agent.sh` → `# all 532 tests passed`, `test_plugin.sh` → `# all 89 tests passed`, `claude plugin validate --strict .` → `✔ Validation passed`, `git status --short` 0줄.
+- push 절차: 이전 원장(2026-09-30)과 동일 — `gh auth switch --user powdream` → push → `gh auth switch --user heejoon-toridori` 원복(trap EXIT로 실패 시에도 원복).
