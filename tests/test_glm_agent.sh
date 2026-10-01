@@ -1858,6 +1858,12 @@ for arg in "$@"; do
   printf 'arg=%s\n' "$arg" >>"$log"
 done
 
+# -q only disables the user's curlrc when it is the very first argument, so
+# it is accepted here and nowhere else.
+if [[ "${1:-}" == -q ]]; then
+  shift
+fi
+
 output=''
 write_out=''
 url=''
@@ -1979,6 +1985,8 @@ assert_eq 'quota prints the documented fields' "$expected_quota_ok" "$OUTPUT"
 assert_eq 'quota stderr is empty on success' '' "$STDERR"
 
 quota_argv="$(cat "$FAKE_CURL_LOG")"
+assert_eq 'quota disables curlrc with -q as the first curl argument' \
+  'arg=-q' "$(head -n 1 "$FAKE_CURL_LOG")"
 assert_contains 'quota runs curl silently with errors' "$quota_argv" $'arg=-sS\n'
 assert_contains 'quota bounds connect and total time' "$quota_argv" \
   $'arg=--connect-timeout\narg=5\narg=--max-time\narg=10\n'

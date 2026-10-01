@@ -2209,11 +2209,12 @@ cmd_quota() {
   stderr_tmp="$(mktemp "$quota_dir/.stderr.XXXXXX")"
 
   # The key travels only as a header line on curl's stdin (printf is a shell
-  # builtin), so it never appears in any process argument list.
+  # builtin), so it never appears in any process argument list. -q must come
+  # first: it keeps a user's curlrc (verbose, fail, ...) from changing the call.
   local http_code curl_status=0
   http_code="$(
     printf 'Authorization: %s\n' "$ZAI_API_KEY" |
-      curl -sS --connect-timeout 5 --max-time 10 \
+      curl -q -sS --connect-timeout 5 --max-time 10 \
         -H @- -H 'Accept-Language: en-US,en' \
         -o "$response_tmp" -w '%{http_code}' "$url" 2>"$stderr_tmp"
   )" || curl_status=$?
