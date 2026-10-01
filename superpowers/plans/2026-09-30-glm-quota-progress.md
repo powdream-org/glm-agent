@@ -62,3 +62,13 @@
   - raw는 `~/.glm/quota/`에 마지막 1회분 덮어쓰기
   - 제외: 24h 토큰 사용량(`model-usage`) — gate에 불필요(YAGNI)
 - 확인한 사실: Claude Code 공식 문서(Context7 `/websites/code_claude`, skills 문서 "Available string substitutions") — plugin skill에서 `${CLAUDE_PLUGIN_ROOT}`는 본문과 `allowed-tools` Bash 규칙 양쪽에서 치환된다. `unit` 코드표는 공개 자료에서 찾지 못함(LogicIncZo/zai-usage README에도 없음).
+- 2026-10-01 설계 2/2 (skill·테스트·문서) 제시 → User 응답: "5시간 90퍼센트 주간 98퍼센트로 하자" (나머지 항목에 이의 없음)
+  - 기준치: `WINDOW=5h` → `USED_PERCENT >= 90`, `WINDOW=1w` → `USED_PERCENT >= 98`. 내가 제시한 단일 90% 휴리스틱을 User가 창별 값으로 바꿨다.
+  - 검산(내 판단): lite(5h 2000 / 1w 10000)에서 5h 10% = 1w 2% = 200 credit → 두 창의 절대 여유분이 같다. 다른 plan에서는 총량이 달라 절대값도 달라진다.
+  - 모호성 확정(내가 정함, spec 리뷰에서 User 재확인 대상): 기준치 도달 = **단계형**(작고 범위가 정해진 단일 turn 작업만 GLM, 여러 turn 작업은 native). 완전 차단은 `REMAINING=0`일 때만. 미지 창(`u<unit>x<number>`)은 `REMAINING=0` 규칙만 적용하고 처음 보는 창이라고 보고.
+  - skill: `skills/quota/SKILL.md`, `name: quota`, `allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}/glm-agent" quota)`, 본문 명령 = 같은 문자열, 1회 실행
+  - 판정: INVALID+authentication → native+User 보고 / INVALID 기타 → GLM 진행(fail-open, 사후 fallback이 안전망) / TIME_LIMIT 제외 항목 중 REMAINING=0 → native, 소진 항목 RESET_AT 중 최댓값까지 latch 후 재조회 / 기준치 도달 → 단계형 / 그 외 → GLM. 판정에 쓴 WINDOW·REMAINING·RESET_AT를 보고.
+  - bridge agent(`agents/*.md`) 변경 없음
+  - 테스트: fake `curl` PATH 주입(네트워크 없음), test_plugin.sh에 SKILL.md 계약(명령 문자열 = allowed-tools 규칙) 추가
+  - 문서·버전: `--help`·README·AGENTS.md layout(`skills/`) 동기화, `scripts/bump-version.sh 0.5.0`. push·merge·재설치는 별도 승인.
+  - 후속(범위 밖): my-superpowers §6에 "dispatch 전 `glm-agent:quota`" 한 줄 추가 — description만으로는 호출 보장 없음
