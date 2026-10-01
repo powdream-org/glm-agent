@@ -117,7 +117,7 @@ if [[ -f "$plugin_json" && -f "$marketplace_json" ]]; then
   assert_eq 'CLI and plugin versions match' "$cli_version" "$plugin_version"
   assert_eq 'CLI and marketplace versions match' "$cli_version" \
     "$marketplace_version"
-  assert_eq 'release version is 0.4.0' '0.4.0' "$cli_version"
+  assert_eq 'release version is 0.5.0' '0.5.0' "$cli_version"
 fi
 if [[ -f "$explorer_agent" ]]; then
   explorer_content="$(cat "$explorer_agent")"
