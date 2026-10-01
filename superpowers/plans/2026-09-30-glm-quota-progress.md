@@ -115,3 +115,17 @@
   - 메인 독립 검증: `test_glm_agent.sh` 530/530, `test_plugin.sh` 89/89, `bash -n`·`shellcheck` OK, `claude plugin validate --strict .` ✔, `git diff --check 02488aa..HEAD` OK, `glm-agent:2257 curl -q -sS ...`
   - 판정: ① 좌석이 공유 함수 `load_api_key`에 `|| die "cannot read the stored API key: <path>"` 추가 → **수용**(quota M3에 필요 + start/send도 help의 "exit 2 = 설정 오류"와 일치). 단 start/send 동작 변경의 테스트가 없어 **메인이 테스트 추가**: `40ea2ea`, `start` + 읽기 불가 `.env.auth` → `2|`(stdout 빈 값)·stderr에 경로 → `1..532 # all 532 tests passed`. ② quota 전용 `quota_private_dir` 수용 ③ TERM은 foreground curl 종료 후 처리(상한 `--max-time 10`) 수용 ④ INT는 수동 확인(rc=130, quota/ 비어 있음)만 — 수용 ⑤ HUP 미처리·`1113.0` 문자열 분류 → 행 기본값 수용(발생 가능성 낮음) ⑥ 미push amend 수용
 - 2026-10-01 spec 갱신(메인): curl `-q`, 본문 code 우선 ladder(M5)·숫자 비교(M4), exit 1은 항상 QUOTA_STATUS 블록(M3), temp 정리(M6), 빈 WINDOW, skill 4행 `REMAINING`≤0·빈 RESET_AT session latch·인식 창 5h/1w·QUOTA_STATUS 없는 실패 → exit 2 취급, live smoke 관측(5h 미사용 시 `nextResetTime` 없음), 8.1 리뷰 반영 테스트 표
+
+## 토큰 사용량 (2026-10-01, 설계~리뷰 수정 단위)
+
+- 측정: message id 중복 제거 합산. 메인 = `python3 ~/dev/git/toridori-inc/superpowers/tools/token-usage/main_usage.py <session>.jsonl` → `main turns 83 total 17.26M (read 16.34M create 0.80M out 121K) last ctx 330K`. 좌석 = `seat_usage.py`가 이름 없는 좌석 파일(`agent-<id>.jsonl`)을 찾지 못해(`no agent-a<name>-<16 hex>.jsonl`) 같은 방식의 일회성 inline python으로 측정(파일 미생성).
+  | 좌석 | 모델 | turns | total | read | create | out |
+  |---|---|---|---|---|---|---|
+  | spec(tech-writer) | sonnet-5-5 | 21 | 2.71M | 2.42M | 179K | 106K |
+  | plan | sonnet-5-5 | 29 | 5.25M | 4.83M | 263K | 160K |
+  | exec | sonnet-5-5 | 34 | 4.31M | 4.13M | 152K | 33K |
+  | review | opus-5-5 | 27 | 3.14M | 2.93M | 164K | 41K |
+  | fix | sonnet-5-5 | 42 | 5.91M | 5.68M | 170K | 65K |
+- 모델별 합: **opus 20.40M**(메인 17.26M + review 3.14M) / **sonnet 18.18M**(4석). 좌석 5개. 앞 구간 측정 없음(첫 측정).
+- 해석: 메인이 최대 비용 — 83 turns × 마지막 문맥 330K의 cache read. 원인 후보: (1) 메인이 spec 1~4절·plan Global/Task 3·리뷰 213행·보고서를 직접 읽음 (2) deferred MCP 도구 목록 등 고정 문맥이 큼 (3) 확인 질문·원장 커밋을 별도 turn으로 많이 씀. 다음에 줄일 방법: 좌석이 20행 이하 판정 파일을 따로 쓰게 하고 메인은 그것만 읽기, 원장 커밋을 다른 도구 호출과 한 Bash로 묶기.
+- 스크립트: 생성·이동·삭제 0(모두 일회성 inline). `seat_usage.py`의 파일명 패턴 불일치는 toridori 도구 쪽 개선 후보(이번 범위 밖).
