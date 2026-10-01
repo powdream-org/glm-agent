@@ -309,8 +309,9 @@ PROVIDER_CODE=
 - The numbers are the server's own; the CLI computes no thresholds.
   `RESET_AT` is UTC, and an empty value means the server did not report it.
 - `WINDOW` is `<n>h` for unit 3 and `<n>w` for unit 6. Any other unit prints
-  as `u<unit>x<number>`. The unit codes are inferred from observed responses;
-  Z.ai does not document them.
+  as `u<unit>x<number>`, and `WINDOW` is empty when `unit` or `number`
+  is not numeric. The unit codes are inferred from observed responses; Z.ai
+  does not document them.
 - Exit status 0 means the lookup succeeded, even when `REMAINING` is 0. Exit
   status 1 prints only `QUOTA_STATUS=INVALID`, `RESPONSE`, `ERROR_KIND`
   (`authentication`, `quota-exhausted`, `provider-transient`,
@@ -322,11 +323,15 @@ PROVIDER_CODE=
 The plugin ships the `glm-agent:quota` skill. An orchestrator runs it before
 dispatching to `glm-agent:explorer` or `glm-agent:general-purpose`:
 
-- Setup errors (exit status 2), `authentication` and `quota-exhausted`
-  failures, and any non-`TIME_LIMIT` limit with `REMAINING=0` send the work to
-  native Claude.
+- Setup errors (exit status 2), any exit status other than 0 or 1, output with
+  no `QUOTA_STATUS` line, `authentication` and `quota-exhausted` failures, and
+  any non-`TIME_LIMIT` limit whose `REMAINING` is a number ≤ 0 (`REMAINING=0`,
+  `0.0`, or `-1`) send the work to native Claude. An exhausted limit with an
+  empty `RESET_AT` latches for the current orchestration session.
 - `USED_PERCENT>=90` on the 5-hour window or `USED_PERCENT>=98` on the weekly
-  window allows only small, bounded, single-turn tasks on GLM.
+  window allows only small, bounded, single-turn tasks on GLM. The recognised
+  windows are exactly `5h` and `1w`; any other `WINDOW` value is judged by
+  `REMAINING` alone and reported as new.
 - Any other lookup failure proceeds with GLM (fail-open); the existing
   `quota-exhausted` fallback remains the safety net.
 

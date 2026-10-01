@@ -432,7 +432,7 @@ assert_contains 'help documents the quota command' "$help_output" \
 assert_contains 'help documents quota status values' "$help_output" \
   'QUOTA_STATUS=OK|INVALID'
 assert_contains 'help documents the quota window format' "$help_output" \
-  'LIMIT_<i>_WINDOW=<n>h|<n>w|u<unit>x<number>'
+  'LIMIT_<i>_WINDOW=<n>h|<n>w|u<unit>x<number>|<empty>'
 for quota_field in 'PLAN_LEVEL=' 'LIMIT_COUNT=' 'LIMIT_<i>_TYPE=' \
   'LIMIT_<i>_TOTAL=' 'LIMIT_<i>_USED=' 'LIMIT_<i>_REMAINING=' \
   'LIMIT_<i>_USED_PERCENT=' 'LIMIT_<i>_RESET_AT='; do

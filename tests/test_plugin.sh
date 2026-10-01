@@ -94,6 +94,16 @@ assert_contains 'README documents the 5-hour threshold' "$readme" \
 assert_contains 'README documents the weekly threshold' "$readme" \
   'USED_PERCENT>=98'
 assert_contains 'README documents quota fail-open' "$readme" 'fail-open'
+assert_contains 'README explains when WINDOW is empty' "$readme" \
+  'is not numeric'
+assert_contains 'README blocks on a remainder that is a number <= 0' \
+  "$readme" 'is a number ≤ 0'
+assert_contains 'README treats an unexpected exit like a setup error' \
+  "$readme" 'any exit status other than 0 or 1'
+assert_contains 'README latches an exhausted limit with no reset time' \
+  "$readme" "empty \`RESET_AT\`"
+assert_contains 'README recognises exactly two windows' "$readme" \
+  "exactly \`5h\` and \`1w\`"
 assert_contains 'README documents the stdin header' "$readme" \
   'curl -H @-'
 assert_contains 'AGENTS.md lists the skills directory' \
@@ -255,7 +265,9 @@ if [[ -f "$quota_skill" ]]; then
     "$skill_body" "$skill_rule_command"
   for keyword in QUOTA_STATUS authentication quota-exhausted fail-open \
     'REMAINING=0' RESET_AT USED_PERCENT 'USED_PERCENT>=90' \
-    'USED_PERCENT>=98' TIME_LIMIT; do
+    'USED_PERCENT>=98' TIME_LIMIT '≤ 0' "exactly \`5h\` and \`1w\`" \
+    'a status other than 0 or 1' "prints no \`QUOTA_STATUS\` line" \
+    "empty \`RESET_AT\`, latch for the current orchestration session"; do
     assert_contains "quota skill decision table mentions $keyword" \
       "$skill_body" "$keyword"
   done

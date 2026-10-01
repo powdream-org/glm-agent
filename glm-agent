@@ -141,7 +141,7 @@ COMMANDS
           PLAN_LEVEL=<plan-or-empty>
           LIMIT_COUNT=<n>
           LIMIT_<i>_TYPE=<server-type>
-          LIMIT_<i>_WINDOW=<n>h|<n>w|u<unit>x<number>
+          LIMIT_<i>_WINDOW=<n>h|<n>w|u<unit>x<number>|<empty>
           LIMIT_<i>_TOTAL=<credits-or-empty>
           LIMIT_<i>_USED=<credits-or-empty>
           LIMIT_<i>_REMAINING=<credits-or-empty>

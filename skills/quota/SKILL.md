@@ -27,7 +27,8 @@ exhausted. Exit status 1 means `QUOTA_STATUS=INVALID`. Exit status 2 is a
 usage or setup error with no `QUOTA_STATUS` line: report its stderr message to
 the User and stay on native Claude, as in row 1 below. The same setup problem
 (missing key, missing `jq`, malformed `ZAI_BASE_URL`) would also stop a GLM
-worker.
+worker. If the command exits with a status other than 0 or 1, or
+prints no `QUOTA_STATUS` line, treat it like exit status 2.
 
 ## Decide
 
@@ -38,20 +39,21 @@ Read the rows from the top and follow the first one that matches.
 | 1 | `QUOTA_STATUS=INVALID` and `ERROR_KIND=authentication` | Native Claude. Report the failure to the User. |
 | 2 | `QUOTA_STATUS=INVALID` and `ERROR_KIND=quota-exhausted` | Native Claude. The reset time is unknown, so latch for the current orchestration session. |
 | 3 | `QUOTA_STATUS=INVALID` with any other `ERROR_KIND` | GLM (fail-open). The post-failure fallback is the safety net. |
-| 4 | A limit whose `LIMIT_n_TYPE` is not `TIME_LIMIT` has `REMAINING=0` | Native Claude. Latch until the latest `RESET_AT` among the exhausted limits, then query again. |
+| 4 | A limit whose `LIMIT_n_TYPE` is not `TIME_LIMIT` has a `LIMIT_n_REMAINING` that is a number ≤ 0 (for example `REMAINING=0`, `0.0`, or `-1`) | Native Claude. Latch until the latest `RESET_AT` among the exhausted limits, then query again. If an exhausted limit has an empty `RESET_AT`, latch for the current orchestration session. |
 | 5 | `WINDOW=5h` with `USED_PERCENT>=90`, or `WINDOW=1w` with `USED_PERCENT>=98` | Graded: send only a small, bounded, single-turn task to GLM; send multi-turn work to native Claude. |
 | 6 | Anything else | GLM. |
 
 - Only rows 1, 2, and 4 block GLM completely.
 - To latch is to skip GLM and skip further lookups until the stated condition
   ends.
-- A `WINDOW` that is empty or looks like `u<unit>x<number>` is an unrecognised
-  window. Only row 4 applies to it; the row 5 thresholds do not. Whichever row
-  matched, also report that the window is new.
+- Recognised windows are exactly `5h` and `1w`. Any other `WINDOW` value
+  (empty, `u<unit>x<number>`, `1h`, `2w`, ...) is unrecognised. Only row 4
+  applies to it; the row 5 thresholds do not. Whichever row matched, also
+  report that the window is new.
 - `TIME_LIMIT` appears to be a separate MCP-usage limit (unverified). Row 4
   ignores it, but it is still printed and counted in `LIMIT_COUNT`.
-- An empty value means the server did not report it. Never read an empty
-  `REMAINING` as 0.
+- An empty value means the server did not report it. An empty `REMAINING` is
+  never a number ≤ 0.
 
 ## Report
 
