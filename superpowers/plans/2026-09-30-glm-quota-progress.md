@@ -99,3 +99,8 @@
   - 메인 독립 검증(worktree, /bin/bash 3.2): `tests/test_glm_agent.sh` → `1..503 # all 503 tests passed` / `tests/test_plugin.sh` → `1..79 # all 79 tests passed` / `bash -n` OK / `shellcheck` OK / `claude plugin validate --strict .` → `✔ Validation passed` / `git diff --check 4cbbfc8..HEAD` OK
   - 버전 3곳 0.5.0 일치(glm-agent:5, plugin.json, marketplace.json). `CLAUDE.md` → `AGENTS.md` symlink 유지. SKILL.md·README에 exit 2 → native 문구 반영 확인.
   - 남은 것: live smoke(User 허가 필요), 최종 독립 리뷰, push·merge·재설치(별도 승인)
+- 2026-10-01 13:28 +0900 live smoke (User 허가: "허가 (Recommended)"). 사전 확인: `~/.curlrc`, `$XDG_CONFIG_HOME/.curlrc` 없음, `CURL_HOME` 미설정.
+  - 명령: `bash <worktree>/glm-agent quota` → `exit=0`, `QUOTA_STATUS=OK`, `PLAN_LEVEL=lite`, `LIMIT_COUNT=2`, `LIMIT_1_WINDOW=5h TOTAL=2000 USED=0 REMAINING=2000 USED_PERCENT=0 RESET_AT=`(빈 값), `LIMIT_2_WINDOW=1w TOTAL=10000 USED=7974 REMAINING=2025 USED_PERCENT=79 RESET_AT=2026-10-05T01:12:44Z`, `ERROR_KIND=`, stderr 0 byte
+  - key 검출(`grep -cF -f <(printf key)`): smoke.out 0 / smoke.err 0 / `~/.glm/quota/response.json` 0 / `~/.glm/quota/stderr.log` 0. 권한: `~/.glm` 700, `~/.glm/quota` 700, 파일 600.
+  - **신규 관측**: 5h 창 사용량이 0이면 응답에 `nextResetTime` 키가 없다(`has("nextResetTime")=false`). 해석: 5h 창은 소비 시점부터 시작(공식 문서 "resets 5 hours after consumption"과 정합). CLI는 빈 값 처리 — plan Review Focus 3과 일치.
+- 2026-10-01 최종 리뷰 도착 — general-purpose 1석(model opus): subagent_tokens 164,441 / tool_uses 30 / 424s. `<scratchpad>/review-final.md`. 판정 "With fixes", Critical 0 / Important 1 / Minor 8. Important: curl이 `~/.curlrc`를 읽음 → `verbose`면 key가 `quota/stderr.log`에, `fail`이면 401이 `provider-transient`로 바뀜. 리뷰어 제안: curl 첫 인자 `-q`.
