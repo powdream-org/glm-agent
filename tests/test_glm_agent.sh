@@ -425,6 +425,26 @@ assert_contains 'help distinguishes launch from completion' "$help_output" \
   'RUNNING is a launch receipt, not task completion.'
 assert_contains 'help distinguishes parent stop from worker cancel' "$help_output" \
   'Stopping a parent Claude turn leaves a detached worker running.'
+assert_contains 'help lists quota in the usage synopsis' "$help_output" \
+  $'\n  glm-agent quota\n'
+assert_contains 'help documents the quota command' "$help_output" \
+  $'\n    quota\n'
+assert_contains 'help documents quota status values' "$help_output" \
+  'QUOTA_STATUS=OK|INVALID'
+assert_contains 'help documents the quota window format' "$help_output" \
+  'LIMIT_<i>_WINDOW=<n>h|<n>w|u<unit>x<number>'
+for quota_field in 'PLAN_LEVEL=' 'LIMIT_COUNT=' 'LIMIT_<i>_TYPE=' \
+  'LIMIT_<i>_TOTAL=' 'LIMIT_<i>_USED=' 'LIMIT_<i>_REMAINING=' \
+  'LIMIT_<i>_USED_PERCENT=' 'LIMIT_<i>_RESET_AT='; do
+  assert_contains "help documents quota field $quota_field" "$help_output" \
+    "$quota_field"
+done
+assert_contains 'help documents the quota success exit' "$help_output" \
+  'quota exits 0 for QUOTA_STATUS=OK'
+assert_contains 'help documents the quota failure exit' "$help_output" \
+  'quota exits 1 when the lookup failed'
+assert_contains 'help documents the quota stdin header' "$help_output" \
+  'HTTP header that curl reads from'
 assert_eq 'version is available' 'glm-agent 0.4.0' "$($SCRIPT --version)"
 
 secret='zai-test-secret-value'
@@ -2241,6 +2261,14 @@ if grep -rqF -- "$QUOTA_KEY" "$QUOTA_HOME"; then
 else
   pass 'quota failure artifacts never contain the key'
 fi
+
+# --- quota: README example matches the CLI output ----------------------------
+readme_quota_example="$(sed -n '/^QUOTA_STATUS=OK$/,/^PROVIDER_CODE=$/p' \
+  "$REPO_DIR/README.md" | sed '/^RESPONSE=/d')"
+actual_quota_example="$(printf '%s\n' "$expected_quota_ok" |
+  sed '/^RESPONSE=/d')"
+assert_eq 'README quota example matches the CLI output' \
+  "$actual_quota_example" "$readme_quota_example"
 
 printf '1..%d\n' "$tests"
 if ((failures > 0)); then

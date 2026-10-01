@@ -85,6 +85,19 @@ assert_contains 'README documents cancellation' "$readme" \
   'glm-agent cancel'
 assert_contains 'README distinguishes parent stop from cancel' "$readme" \
   'Stopping the parent Claude Code turn does not cancel'
+assert_contains 'README documents the quota command' "$readme" \
+  'glm-agent quota'
+assert_contains 'README documents the quota skill' "$readme" \
+  'glm-agent:quota'
+assert_contains 'README documents the 5-hour threshold' "$readme" \
+  'USED_PERCENT>=90'
+assert_contains 'README documents the weekly threshold' "$readme" \
+  'USED_PERCENT>=98'
+assert_contains 'README documents quota fail-open' "$readme" 'fail-open'
+assert_contains 'README documents the stdin header' "$readme" \
+  'curl -H @-'
+assert_contains 'AGENTS.md lists the skills directory' \
+  "$(cat "$REPO_DIR/AGENTS.md")" 'skills/quota/SKILL.md'
 
 if [[ -f "$plugin_json" ]]; then
   assert_eq 'plugin name' 'glm-agent' "$(jq -r '.name' "$plugin_json")"

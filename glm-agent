@@ -42,6 +42,7 @@ USAGE
   glm-agent status <worker-id>
   glm-agent list
   glm-agent close <worker-id>
+  glm-agent quota
   glm-agent --help
   glm-agent --version
 
@@ -127,6 +128,35 @@ COMMANDS
       Mark an idle worker closed. This does not delete its history. A closed
       worker remains available to result and status but rejects send and tui.
 
+    quota
+        Query Z.ai's monitor API once and print the credit quota per window.
+        This creates no worker and starts no Claude session. Values are
+        printed as the server reports them; the glm-agent:quota skill turns
+        them into a dispatch decision. The last raw response and curl stderr
+        are kept in ~/.glm/quota/response.json and ~/.glm/quota/stderr.log.
+        Requires curl 7.55 or newer and jq.
+
+        Output:
+          QUOTA_STATUS=OK|INVALID
+          PLAN_LEVEL=<plan-or-empty>
+          LIMIT_COUNT=<n>
+          LIMIT_<i>_TYPE=<server-type>
+          LIMIT_<i>_WINDOW=<n>h|<n>w|u<unit>x<number>
+          LIMIT_<i>_TOTAL=<credits-or-empty>
+          LIMIT_<i>_USED=<credits-or-empty>
+          LIMIT_<i>_REMAINING=<credits-or-empty>
+          LIMIT_<i>_USED_PERCENT=<percent-or-empty>
+          LIMIT_<i>_RESET_AT=<UTC-timestamp-or-empty>
+          RESPONSE=<absolute-path>
+          ERROR_KIND=<classification-or-empty>
+          PROVIDER_CODE=<Z.ai-code-or-empty>
+
+        The LIMIT_<i>_ lines appear once per limit, only when
+        QUOTA_STATUS=OK. A failed lookup prints only QUOTA_STATUS=INVALID,
+        RESPONSE, ERROR_KIND, and PROVIDER_CODE. ERROR_KIND is one of
+        authentication, quota-exhausted, provider-transient,
+        model-unavailable, provider-error, or invalid-response.
+
 WORKER FILES
   ~/.glm/workers/<worker-id>/
     meta
@@ -182,9 +212,15 @@ SECURITY
   headless worker can edit files and run verification without an interactive
   approval prompt. Start workers only in repositories you trust.
 
+  quota sends the API key to Z.ai only as an HTTP header that curl reads from
+  stdin, so the key never appears in a process argument list. ~/.glm/quota/
+  holds the raw response body and curl stderr, never the key.
+
 EXIT STATUS
   0  Command succeeded; DONE and BLOCKED are both successful worker turns.
+     quota exits 0 for QUOTA_STATUS=OK, even when a window is exhausted.
   1  Claude invocation or worker result protocol failed (STATUS=INVALID).
+     quota exits 1 when the lookup failed (QUOTA_STATUS=INVALID).
   2  Invalid CLI usage, configuration, dependency, or worker state.
 EOF
 }

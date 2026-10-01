@@ -22,9 +22,13 @@ Claude JSON, and stderr belong under the worker directory.
 - `prompts/`: role-specific worker prompts, loaded directly on every turn.
 - `.claude-plugin/`: Claude Code plugin and marketplace manifests.
 - `agents/`: thin Claude Code bridges for explorer and general-purpose workers.
+- `skills/`: Claude Code skills; `skills/quota/SKILL.md` is the quota gate that
+  runs before work is dispatched to GLM or native Claude.
 - `scripts/bump-version.sh`: synchronized CLI/plugin/marketplace version bump.
-- `tests/test_glm_agent.sh`: hermetic CLI tests using a fake `claude` binary.
-- `tests/test_plugin.sh`: plugin schema, bridge contract, and version tests.
+- `tests/test_glm_agent.sh`: hermetic CLI tests using fake `claude` and `curl`
+  binaries.
+- `tests/test_plugin.sh`: plugin schema, bridge contract, skill contract, and
+  version tests.
 - `README.md`: public installation, usage, behavior, and security documentation.
 - `LICENSE`: MIT License terms for the project.
 - `CLAUDE.md`: compatibility symlink; never replace it with an independent copy.
@@ -43,6 +47,8 @@ Preserve these unless the requested change explicitly revises the contract:
 - Starting a background process alone is not completion.
 - `close` preserves worker history and rejects later `send` calls.
 - API keys and Claude session IDs must not appear in normal stdout.
+- `quota` passes the API key to `curl` only as a stdin header (`-H @-`); it
+  never appears in argv, stdout, stderr, or files.
 - `system-prompt.md` is read directly on every turn; it is not duplicated in
   the Bash source.
 

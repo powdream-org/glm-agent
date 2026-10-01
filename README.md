@@ -178,6 +178,7 @@ with `mode`, `prompt.md`, `stderr.log`, `result.md`, and `exit.meta` artifacts.
 | `status <worker-id>` | Print compact worker state without exposing the session ID. |
 | `list` | List known workers. |
 | `close <worker-id>` | Prevent further sends while preserving all worker files. |
+| `quota` | Print the Z.ai credit quota per window; creates no worker and starts no Claude session. |
 | `--help` | Show the complete CLI and worker contract. |
 | `--version` | Print the wrapper version. |
 
@@ -276,6 +277,61 @@ The endpoint and aliases can be overridden with `ZAI_BASE_URL`,
 `GLM_AGENT_HOME` changes the state directory, which is useful for isolated
 tests.
 
+## Quota gate
+
+`glm-agent quota` makes one read-only request to Z.ai's monitor API and prints
+the credit quota per window. It needs `curl` 7.55 or newer and `jq`, creates no
+worker, and starts no Claude session.
+
+```text
+QUOTA_STATUS=OK
+PLAN_LEVEL=lite
+LIMIT_COUNT=2
+LIMIT_1_TYPE=CREDIT_LIMIT
+LIMIT_1_WINDOW=5h
+LIMIT_1_TOTAL=2000
+LIMIT_1_USED=1450
+LIMIT_1_REMAINING=549
+LIMIT_1_USED_PERCENT=72
+LIMIT_1_RESET_AT=2026-09-30T18:03:15Z
+LIMIT_2_TYPE=CREDIT_LIMIT
+LIMIT_2_WINDOW=1w
+LIMIT_2_TOTAL=10000
+LIMIT_2_USED=7974
+LIMIT_2_REMAINING=2025
+LIMIT_2_USED_PERCENT=79
+LIMIT_2_RESET_AT=2026-10-05T01:12:44Z
+RESPONSE=/home/you/.glm/quota/response.json
+ERROR_KIND=
+PROVIDER_CODE=
+```
+
+- The numbers are the server's own; the CLI computes no thresholds.
+  `RESET_AT` is UTC, and an empty value means the server did not report it.
+- `WINDOW` is `<n>h` for unit 3 and `<n>w` for unit 6. Any other unit prints
+  as `u<unit>x<number>`. The unit codes are inferred from observed responses;
+  Z.ai does not document them.
+- Exit status 0 means the lookup succeeded, even when `REMAINING` is 0. Exit
+  status 1 prints only `QUOTA_STATUS=INVALID`, `RESPONSE`, `ERROR_KIND`
+  (`authentication`, `quota-exhausted`, `provider-transient`,
+  `model-unavailable`, `provider-error`, or `invalid-response`), and
+  `PROVIDER_CODE`. Exit status 2 is a usage or setup error.
+- `~/.glm/quota/response.json` and `~/.glm/quota/stderr.log` keep the last
+  call only.
+
+The plugin ships the `glm-agent:quota` skill. An orchestrator runs it before
+dispatching to `glm-agent:explorer` or `glm-agent:general-purpose`:
+
+- Setup errors (exit status 2), `authentication` and `quota-exhausted`
+  failures, and any non-`TIME_LIMIT` limit with `REMAINING=0` send the work to
+  native Claude.
+- `USED_PERCENT>=90` on the 5-hour window or `USED_PERCENT>=98` on the weekly
+  window allows only small, bounded, single-turn tasks on GLM.
+- Any other lookup failure proceeds with GLM (fail-open); the existing
+  `quota-exhausted` fallback remains the safety net.
+
+The thresholds live in the skill, not in the CLI.
+
 ## Security
 
 `start` and `send` invoke Claude Code with
@@ -290,6 +346,10 @@ working tree for unexpected changes.
 The wrapper does not print the API key, and `status` does not expose the Claude
 session ID. Avoid committing `~/.glm`, captured worker files, or shell output
 that may contain private task data.
+
+`quota` passes the API key to `curl` as a header read from stdin
+(`curl -H @-`), so the key never appears in a process argument list.
+`~/.glm/quota/` stores only the response body and curl's stderr.
 
 ## Development
 
