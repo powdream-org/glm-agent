@@ -137,3 +137,4 @@
 - 통합 방식 User 결정 대기
 - 2026-10-01 User 결정: "main에 푸쉬" → Option 1(로컬 merge) + `origin/main` push. primary 클론(`main`, clean, `25516ba`)에서 `git merge --ff-only feat/glm-quota` → `main` = `c907286`(fast-forward, linear 유지). merged 결과 검증: `test_glm_agent.sh` → `# all 532 tests passed`, `test_plugin.sh` → `# all 89 tests passed`, `claude plugin validate --strict .` → `✔ Validation passed`, `git status --short` 0줄.
 - push 절차: 이전 원장(2026-09-30)과 동일 — `gh auth switch --user powdream` → push → `gh auth switch --user heejoon-toridori` 원복(trap EXIT로 실패 시에도 원복).
+- 2026-10-01 push 결과: `git push --porcelain origin main` → `25516ba..bb2414b`, `git fetch origin main` 후 `origin/main` = `bb2414b81388dc02a44014bfb870d72d7a90226a` = 로컬 HEAD. 이 원장 줄은 두 번째 push로 반영(같은 계정 전환 구간 안).
