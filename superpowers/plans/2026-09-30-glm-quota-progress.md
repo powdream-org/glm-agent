@@ -108,3 +108,4 @@
   - 반영(구현 수준, spec 범위 내): I1 curl `-q` 첫 인자 + fake curl·테스트 / M3-CLI state 디렉터리 실패 → `die`(exit 2) / M4 code 숫자 비교 / M6 temp 정리 trap / M7 빈 WINDOW 문서화 / M8 테스트 보강(부분 body + 비0 exit, capture 실행 key scan, -q 첫 인자 assertion)
   - User 확인 대기(spec 변경): M1 `REMAINING`≤0 / M2 빈 RESET_AT 소진 → session latch, 인식 창 = 정확히 `5h`·`1w` / M3-skill exit∉{0,1} 또는 QUOTA_STATUS 없는 exit 1 → exit 2 취급 / M5 4xx·5xx 본문의 분류 가능 code 우선(이득 modest, endpoint의 429+1113 동반 미검증)
   - 범위 밖 확정(Declined 7건): 사용자 export `ZAI_API_KEY` env 노출·`http://` 평문·xtrace/BASH_ENV·IPv6/대문자 scheme 거부·U+2028/2029·allowed-tools 턴 한정·`quota --help` exit 2 — 기존 동작이거나 사용자 유발
+- 2026-10-01 User 결정: spec 변경 리뷰 항목 **전부 반영** ("전부 반영 (Recommended)" — M1·M2·M3-skill·M5). 수정 좌석 general-purpose 1석(model sonnet), 보고 `<scratchpad>/fix-report.md`. spec 수정은 메인이 하고 좌석 완료 후 커밋(같은 worktree index 경합 회피).
