@@ -2110,6 +2110,138 @@ else
   pass 'quota state files never contain the key'
 fi
 
+# --- quota: failure classification (exit 1, QUOTA_STATUS=INVALID) ------------
+QUOTA_SEEN=''
+
+cat >"$QUOTA_FIXTURES/code-1001.json" <<'JSON'
+{"code":1001,"msg":"Header Authorization missing or invalid","success":false}
+JSON
+cat >"$QUOTA_FIXTURES/code-1113.json" <<'JSON'
+{"code":1113,"msg":"Insufficient balance","success":false}
+JSON
+cat >"$QUOTA_FIXTURES/code-1302.json" <<'JSON'
+{"code":1302,"msg":"Rate limit reached","success":false}
+JSON
+cat >"$QUOTA_FIXTURES/code-1211.json" <<'JSON'
+{"code":1211,"msg":"Unknown model","success":false}
+JSON
+cat >"$QUOTA_FIXTURES/code-9999.json" <<'JSON'
+{"code":9999,"msg":"Unexpected","success":false}
+JSON
+cat >"$QUOTA_FIXTURES/code-404.json" <<'JSON'
+{"code":404,"msg":"Not found","success":false}
+JSON
+cat >"$QUOTA_FIXTURES/declined-200.json" <<'JSON'
+{"code":200,"msg":"declined","success":false}
+JSON
+cat >"$QUOTA_FIXTURES/no-limits.json" <<'JSON'
+{"code":200,"msg":"ok","data":{"level":"lite"},"success":true}
+JSON
+cat >"$QUOTA_FIXTURES/data-null.json" <<'JSON'
+{"code":200,"msg":"ok","data":null,"success":true}
+JSON
+printf '%s\n' '<html>bad gateway</html>' >"$QUOTA_FIXTURES/not-json.txt"
+printf '%s\n' '[]' >"$QUOTA_FIXTURES/array.json"
+{ cat "$QUOTA_FIXTURES/ok.json"; printf 'trailing garbage\n'; } \
+  >"$QUOTA_FIXTURES/trailing-garbage.json"
+{ printf '\357\273\277'; cat "$QUOTA_FIXTURES/ok.json"; } \
+  >"$QUOTA_FIXTURES/bom.json"
+
+# assert_quota_failure <name> <error-kind> <provider-code>
+# Checks the exit status and the complete four-line failure output.
+assert_quota_failure() {
+  local name="$1" kind="$2" code="$3" expected
+  expected="$(printf 'QUOTA_STATUS=INVALID\nRESPONSE=%s\nERROR_KIND=%s\nPROVIDER_CODE=%s' \
+    "$QUOTA_HOME/quota/response.json" "$kind" "$code")"
+  assert_eq "$name" "1|$expected" "$RC|$OUTPUT"
+}
+
+# Rows 1-3: transport and HTTP status decide before the body is read.
+quota_case 000 '' 28
+assert_quota_failure 'curl timeout is provider-transient' provider-transient ''
+assert_eq 'curl failure leaves an empty raw response' '' \
+  "$(cat "$QUOTA_HOME/quota/response.json")"
+assert_contains 'curl failure keeps curl stderr' \
+  "$(cat "$QUOTA_HOME/quota/stderr.log")" 'curl: (28)'
+quota_case 000 '' 6
+assert_quota_failure 'curl network error is provider-transient' \
+  provider-transient ''
+quota_case 401 '' 0
+assert_quota_failure 'HTTP 401 is authentication' authentication ''
+quota_case 403 "$QUOTA_FIXTURES/code-1001.json" 0
+assert_quota_failure 'HTTP 403 keeps the provider code' authentication 1001
+assert_eq 'HTTP failure keeps the raw body' \
+  "$(cat "$QUOTA_FIXTURES/code-1001.json")" \
+  "$(cat "$QUOTA_HOME/quota/response.json")"
+quota_case 429 '' 0
+assert_quota_failure 'HTTP 429 is provider-transient' provider-transient ''
+for http_status in 500 503; do
+  quota_case "$http_status" '' 0
+  assert_quota_failure "HTTP $http_status is provider-transient" \
+    provider-transient ''
+done
+
+# Row 4: a provider error inside the body reuses classify_error_kind.
+quota_case 200 "$QUOTA_FIXTURES/code-1001.json" 0
+assert_quota_failure 'body code 1001 is authentication' authentication 1001
+quota_case 200 "$QUOTA_FIXTURES/code-1113.json" 0
+assert_quota_failure 'body code 1113 is quota-exhausted' quota-exhausted 1113
+quota_case 200 "$QUOTA_FIXTURES/code-1302.json" 0
+assert_quota_failure 'body code 1302 is provider-transient' \
+  provider-transient 1302
+quota_case 200 "$QUOTA_FIXTURES/code-1211.json" 0
+assert_quota_failure 'body code 1211 is model-unavailable' \
+  model-unavailable 1211
+quota_case 200 "$QUOTA_FIXTURES/code-9999.json" 0
+assert_quota_failure 'unlisted body code is provider-error' provider-error 9999
+quota_case 200 "$QUOTA_FIXTURES/declined-200.json" 0
+assert_quota_failure 'success:false with code 200 has no provider code' \
+  provider-error ''
+
+# Row 6: other non-200 statuses.
+quota_case 404 "$QUOTA_FIXTURES/not-json.txt" 0
+assert_quota_failure 'HTTP 404 with a text body is provider-error' \
+  provider-error ''
+quota_case 404 "$QUOTA_FIXTURES/code-404.json" 0
+assert_quota_failure 'HTTP 404 with a JSON body keeps its code' \
+  provider-error 404
+quota_case 302 "$QUOTA_FIXTURES/ok.json" 0
+assert_quota_failure 'HTTP 302 is never a successful lookup' provider-error ''
+
+# Row 5: HTTP 200 whose body is not a usable quota document.
+quota_case 200 "$QUOTA_FIXTURES/not-json.txt" 0
+assert_quota_failure 'HTTP 200 with a text body is invalid-response' \
+  invalid-response ''
+quota_case 200 "$QUOTA_FIXTURES/no-limits.json" 0
+assert_quota_failure 'missing data.limits is invalid-response' \
+  invalid-response ''
+quota_case 200 "$QUOTA_FIXTURES/data-null.json" 0
+assert_quota_failure 'success:true with null data is invalid-response' \
+  invalid-response ''
+quota_case 200 "$QUOTA_FIXTURES/array.json" 0
+assert_quota_failure 'a JSON array body is invalid-response' invalid-response ''
+quota_case 200 '' 0
+assert_quota_failure 'an empty body is invalid-response' invalid-response ''
+quota_case 200 "$QUOTA_FIXTURES/trailing-garbage.json" 0
+assert_quota_failure 'trailing garbage after the JSON is invalid-response' \
+  invalid-response ''
+
+# A UTF-8 BOM before otherwise valid JSON is accepted (jq strips it).
+quota_case 200 "$QUOTA_FIXTURES/bom.json" 0
+assert_eq 'a BOM-prefixed response is accepted' "0|$expected_quota_ok" \
+  "$RC|$OUTPUT"
+
+assert_eq 'failures leave exactly the two raw artifacts' \
+  $'response.json\nstderr.log' "$(ls -A "$QUOTA_HOME/quota")"
+assert_not_contains 'quota failure cases never print the key' \
+  "$QUOTA_SEEN" "$QUOTA_KEY"
+if grep -rqF -- "$QUOTA_KEY" "$QUOTA_HOME"; then
+  fail 'quota failure artifacts never contain the key' \
+    "key found under $QUOTA_HOME"
+else
+  pass 'quota failure artifacts never contain the key'
+fi
+
 printf '1..%d\n' "$tests"
 if ((failures > 0)); then
   printf '# %d test(s) failed\n' "$failures" >&2
