@@ -48,7 +48,9 @@ Preserve these unless the requested change explicitly revises the contract:
 - `close` preserves worker history and rejects later `send` calls.
 - API keys and Claude session IDs must not appear in normal stdout.
 - `quota` passes the API key to `curl` only as a stdin header (`-H @-`); it
-  never appears in argv, stdout, stderr, or files.
+  never appears in argv, stdout, stderr, or files. Team-scope selectors share
+  that stdin header block and are stored in `~/.glm/.env.team-scope` (mode
+  0600); `quota` uses the team plan only when both selectors are configured.
 - `system-prompt.md` is read directly on every turn; it is not duplicated in
   the Bash source.
 

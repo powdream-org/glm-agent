@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROGRAM="${0##*/}"
-VERSION="0.5.0"
+VERSION="0.6.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
@@ -15,6 +15,7 @@ if [[ "$GLM_AGENT_HOME" != /* ]]; then
 fi
 
 AUTH_FILE="$GLM_AGENT_HOME/.env.auth"
+TEAM_SCOPE_FILE="$GLM_AGENT_HOME/.env.team-scope"
 WORKERS_DIR="$GLM_AGENT_HOME/workers"
 
 ZAI_BASE_URL="${ZAI_BASE_URL:-https://api.z.ai/api/anthropic}"
@@ -29,6 +30,7 @@ glm-agent - persistent GLM coding worker for agent orchestration
 
 USAGE
   glm-agent api-key [key]
+  glm-agent team-scope [<organization> <project> | --clear]
   glm-agent run <prompt>
   glm-agent start [--role <role>] [--model <alias>] [--cwd <directory>] <task>
   glm-agent start --async [--role <role>] [--model <alias>] [--cwd <directory>] <task>
@@ -61,6 +63,14 @@ COMMANDS
       Save the Z.ai API key. With no argument, read it from an interactive
       hidden prompt so it does not enter shell history. The stored key takes
       second priority to an explicit ZAI_API_KEY environment variable.
+
+  team-scope [<organization> <project> | --clear]
+      Show, save, or clear the team-plan quota scope. quota queries the
+      personal coding plan by default; a saved organization and project
+      switch it to the team plan (type=2 with Bigmodel selector headers).
+      The ZAI_QUOTA_ORGANIZATION and ZAI_QUOTA_PROJECT environment
+      variables override the stored values one by one. Configuring exactly
+      one selector is a configuration error; quota needs both or neither.
 
   run <prompt>
       Run a one-shot diagnostic GLM Claude Code session. This does not create
@@ -138,6 +148,7 @@ COMMANDS
 
         Output:
           QUOTA_STATUS=OK|INVALID
+          SCOPE=personal|team
           PLAN_LEVEL=<plan-or-empty>
           LIMIT_COUNT=<n>
           LIMIT_<i>_TYPE=<server-type>
@@ -153,7 +164,7 @@ COMMANDS
 
         The LIMIT_<i>_ lines appear once per limit, only when
         QUOTA_STATUS=OK. A failed lookup prints only QUOTA_STATUS=INVALID,
-        RESPONSE, ERROR_KIND, and PROVIDER_CODE. ERROR_KIND is one of
+        SCOPE, RESPONSE, ERROR_KIND, and PROVIDER_CODE. ERROR_KIND is one of
         authentication, quota-exhausted, provider-transient,
         model-unavailable, provider-error, or invalid-response.
 
@@ -200,6 +211,10 @@ ENVIRONMENT
       System prompt Markdown read at the start of every worker turn.
       Default: system-prompt.md next to the glm-agent executable.
 
+  ZAI_QUOTA_ORGANIZATION, ZAI_QUOTA_PROJECT
+      Team-plan quota selectors for quota, overriding the stored
+      team-scope values one by one. Both or neither must be set.
+
   GLM_ROLE_PROMPTS_DIR
       Directory containing explorer.md and general-purpose.md, read directly
       on every turn. Default: prompts/ next to the executable.
@@ -213,7 +228,8 @@ SECURITY
   approval prompt. Start workers only in repositories you trust.
 
   quota sends the API key to Z.ai only as an HTTP header that curl reads from
-  stdin, so the key never appears in a process argument list. ~/.glm/quota/
+  stdin, so the key never appears in a process argument list. Configured
+  team-scope selectors travel in the same stdin header block. ~/.glm/quota/
   holds the raw response body and curl stderr, never the key.
 
 EXIT STATUS
@@ -276,6 +292,40 @@ load_api_key() {
   ZAI_API_KEY="$(<"$AUTH_FILE")" ||
     die "cannot read the stored API key: $AUTH_FILE"
   [[ -n "$ZAI_API_KEY" ]] || die "stored API key is empty"
+}
+
+# Resolves the quota scope. ZAI_QUOTA_ORGANIZATION and ZAI_QUOTA_PROJECT
+# override the stored selectors one by one; both set means team, neither
+# means personal, and exactly one is a configuration error. Sets
+# ZAI_QUOTA_SCOPE, ZAI_QUOTA_ORGANIZATION, and ZAI_QUOTA_PROJECT.
+load_team_scope() {
+  local file_org='' file_proj='' scope_raw=''
+
+  if [[ -f "$TEAM_SCOPE_FILE" ]]; then
+    scope_raw="$(cat "$TEAM_SCOPE_FILE")" ||
+      die "cannot read the stored team scope: $TEAM_SCOPE_FILE"
+    file_org="${scope_raw%%$'\n'*}"
+    file_proj="${scope_raw#*$'\n'}"
+    [[ "$file_org" == organization=* ]] ||
+      die "team scope file must start with an organization= line: $TEAM_SCOPE_FILE"
+    [[ "$file_proj" == project=* ]] ||
+      die "team scope file must carry a project= line: $TEAM_SCOPE_FILE"
+    file_org="${file_org#organization=}"
+    file_proj="${file_proj#project=}"
+  fi
+
+  ZAI_QUOTA_ORGANIZATION="${ZAI_QUOTA_ORGANIZATION:-$file_org}"
+  ZAI_QUOTA_PROJECT="${ZAI_QUOTA_PROJECT:-$file_proj}"
+
+  if [[ -n "$ZAI_QUOTA_ORGANIZATION" || -n "$ZAI_QUOTA_PROJECT" ]]; then
+    [[ -n "$ZAI_QUOTA_ORGANIZATION" && -n "$ZAI_QUOTA_PROJECT" ]] ||
+      die "team scope needs both an organization and a project. Run: $PROGRAM team-scope <organization> <project>"
+    validate_single_line "team organization" "$ZAI_QUOTA_ORGANIZATION"
+    validate_single_line "team project" "$ZAI_QUOTA_PROJECT"
+    ZAI_QUOTA_SCOPE=team
+  else
+    ZAI_QUOTA_SCOPE=personal
+  fi
 }
 
 require_execution_dependencies() {
@@ -1574,6 +1624,43 @@ cmd_api_key() {
   printf 'AUTH_FILE=%s\n' "$AUTH_FILE"
 }
 
+cmd_team_scope() {
+  if (($# == 0)); then
+    load_team_scope
+    printf 'TEAM_SCOPE=%s\n' "$ZAI_QUOTA_SCOPE"
+    printf 'ORGANIZATION=%s\n' "${ZAI_QUOTA_ORGANIZATION:-}"
+    printf 'PROJECT=%s\n' "${ZAI_QUOTA_PROJECT:-}"
+    return 0
+  fi
+
+  if [[ "$1" == --clear ]]; then
+    (($# == 1)) || die "team-scope --clear accepts no other arguments"
+    rm -f -- "$TEAM_SCOPE_FILE"
+    printf 'TEAM_SCOPE=CLEARED\n'
+    return 0
+  fi
+
+  (($# == 2)) ||
+    die "team-scope requires an organization and a project, --clear, or no arguments"
+  local organization="$1" project="$2"
+  [[ -n "$organization" ]] || die "team organization must not be empty"
+  [[ -n "$project" ]] || die "team project must not be empty"
+  validate_single_line "team organization" "$organization"
+  validate_single_line "team project" "$project"
+
+  ensure_state_home
+  local tmp
+  tmp="$(mktemp "$GLM_AGENT_HOME/.team-scope.XXXXXX")" ||
+    die "cannot create a temporary file in $GLM_AGENT_HOME"
+  chmod 600 "$tmp"
+  printf 'organization=%s\nproject=%s\n' "$organization" "$project" >"$tmp"
+  mv "$tmp" "$TEAM_SCOPE_FILE"
+
+  printf 'TEAM_SCOPE=SAVED\n'
+  printf 'ORGANIZATION=%s\n' "$organization"
+  printf 'PROJECT=%s\n' "$project"
+}
+
 cmd_run() {
   (($# > 0)) || die "run requires a prompt"
   load_api_key
@@ -2143,8 +2230,9 @@ cmd_close() {
 
 QUOTA_ENDPOINT_PATH='/api/monitor/usage/quota/limit'
 
-# jq program for a successful quota response. It prints KEY=VALUE lines;
-# missing numbers print empty and server strings lose control characters.
+# jq program for a successful quota response. It prints the KEY=VALUE lines
+# after the two status lines the wrapper prints itself; missing numbers print
+# empty and server strings lose control characters.
 quota_render_jq() {
   cat <<'JQ'
 def str:
@@ -2164,8 +2252,7 @@ def reset_at:
   else "" end;
 .data as $data
 | ($data.limits | length) as $count
-| "QUOTA_STATUS=OK",
-  "PLAN_LEVEL=\($data.level | str)",
+| "PLAN_LEVEL=\($data.level | str)",
   "LIMIT_COUNT=\($count)",
   (range(0; $count) as $i
     | ($i + 1) as $n
@@ -2230,6 +2317,20 @@ cmd_quota() {
   url="$(quota_endpoint_url)"
   load_api_key
   validate_single_line "API key" "$ZAI_API_KEY"
+  load_team_scope
+
+  # A team scope switches the lookup to the team plan: the request gains
+  # type=2 and both Bigmodel selector headers join the key in curl's stdin
+  # header block, so no selector reaches a process argument list either.
+  local header_block
+  if [[ "$ZAI_QUOTA_SCOPE" == team ]]; then
+    url="$url?type=2"
+    header_block="Authorization: $ZAI_API_KEY
+Bigmodel-Organization: $ZAI_QUOTA_ORGANIZATION
+Bigmodel-Project: $ZAI_QUOTA_PROJECT"
+  else
+    header_block="Authorization: $ZAI_API_KEY"
+  fi
 
   local quota_dir="$GLM_AGENT_HOME/quota"
   local response_file="$quota_dir/response.json"
@@ -2253,7 +2354,7 @@ cmd_quota() {
   # first: it keeps a user's curlrc (verbose, fail, ...) from changing the call.
   local http_code curl_status=0
   http_code="$(
-    printf 'Authorization: %s\n' "$ZAI_API_KEY" |
+    printf '%s\n' "$header_block" |
       curl -q -sS --connect-timeout 5 --max-time 10 \
         -H @- -H 'Accept-Language: en-US,en' \
         -o "$response_tmp" -w '%{http_code}' "$url" 2>"$stderr_tmp"
@@ -2316,12 +2417,15 @@ cmd_quota() {
 
   if [[ -n "$error_kind" ]]; then
     printf 'QUOTA_STATUS=INVALID\n'
+    printf 'SCOPE=%s\n' "$ZAI_QUOTA_SCOPE"
     printf 'RESPONSE=%s\n' "$response_file"
     printf 'ERROR_KIND=%s\n' "$error_kind"
     printf 'PROVIDER_CODE=%s\n' "$provider_code"
     return 1
   fi
 
+  printf 'QUOTA_STATUS=OK\n'
+  printf 'SCOPE=%s\n' "$ZAI_QUOTA_SCOPE"
   printf '%s\n' "$rendered"
   printf 'RESPONSE=%s\n' "$response_file"
   printf 'ERROR_KIND=\n'
@@ -2341,6 +2445,10 @@ main() {
     api-key)
       shift
       cmd_api_key "$@"
+      ;;
+    team-scope)
+      shift
+      cmd_team_scope "$@"
       ;;
     run)
       shift

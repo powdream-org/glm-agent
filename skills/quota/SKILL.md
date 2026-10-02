@@ -18,11 +18,14 @@ bash "${CLAUDE_PLUGIN_ROOT}/glm-agent" quota
 ```
 
 The command makes one read-only request to Z.ai and prints `KEY=VALUE` lines:
-`QUOTA_STATUS` (`OK` or `INVALID`), `PLAN_LEVEL`, `LIMIT_COUNT`, then for each
+`QUOTA_STATUS` (`OK` or `INVALID`), `SCOPE` (`personal` or `team`, depending
+on whether a team scope was configured with `glm-agent team-scope`),
+`PLAN_LEVEL`, `LIMIT_COUNT`, then for each
 limit `n` the fields `LIMIT_n_TYPE`, `LIMIT_n_WINDOW`, `LIMIT_n_TOTAL`,
 `LIMIT_n_USED`, `LIMIT_n_REMAINING`, `LIMIT_n_USED_PERCENT`, and
 `LIMIT_n_RESET_AT` (UTC), and finally `RESPONSE`, `ERROR_KIND`, and
-`PROVIDER_CODE`. Exit status 0 means `QUOTA_STATUS=OK`, even when a window is
+`PROVIDER_CODE`. The decision rules below apply unchanged in both scopes.
+Exit status 0 means `QUOTA_STATUS=OK`, even when a window is
 exhausted. Exit status 1 means `QUOTA_STATUS=INVALID`. Exit status 2 is a
 usage or setup error with no `QUOTA_STATUS` line: report its stderr message to
 the User and stay on native Claude, as in row 1 below. The same setup problem

@@ -179,6 +179,7 @@ with `mode`, `prompt.md`, `stderr.log`, `result.md`, and `exit.meta` artifacts.
 | `list` | List known workers. |
 | `close <worker-id>` | Prevent further sends while preserving all worker files. |
 | `quota` | Print the Z.ai credit quota per window; creates no worker and starts no Claude session. |
+| `team-scope [<organization> <project> \| --clear]` | Show, save, or clear the team-plan quota selectors used by `quota`. |
 | `--help` | Show the complete CLI and worker contract. |
 | `--version` | Print the wrapper version. |
 
@@ -285,6 +286,7 @@ worker, and starts no Claude session.
 
 ```text
 QUOTA_STATUS=OK
+SCOPE=personal
 PLAN_LEVEL=lite
 LIMIT_COUNT=2
 LIMIT_1_TYPE=CREDIT_LIMIT
@@ -313,12 +315,22 @@ PROVIDER_CODE=
   is not numeric. The unit codes are inferred from observed responses; Z.ai
   does not document them.
 - Exit status 0 means the lookup succeeded, even when `REMAINING` is 0. Exit
-  status 1 prints only `QUOTA_STATUS=INVALID`, `RESPONSE`, `ERROR_KIND`
-  (`authentication`, `quota-exhausted`, `provider-transient`,
+  status 1 prints only `QUOTA_STATUS=INVALID`, `SCOPE`, `RESPONSE`,
+  `ERROR_KIND` (`authentication`, `quota-exhausted`, `provider-transient`,
   `model-unavailable`, `provider-error`, or `invalid-response`), and
   `PROVIDER_CODE`. Exit status 2 is a usage or setup error.
 - `~/.glm/quota/response.json` and `~/.glm/quota/stderr.log` keep the last
   call only.
+- The lookup queries the personal coding plan by default (`SCOPE=personal`).
+  An account using a GLM Team Plan instead of a personal subscription can
+  save the team's organization and project selectors once with
+  `glm-agent team-scope <organization> <project>`; `quota` then requests the
+  team usage (`SCOPE=team`, `type=2` with Bigmodel selector headers). The
+  selectors are copied from the team usage dashboard's
+  `api/monitor/usage/quota/limit` request headers in the browser's DevTools.
+  The `ZAI_QUOTA_ORGANIZATION` and `ZAI_QUOTA_PROJECT` environment variables
+  override the stored values one by one; configuring exactly one selector is
+  a setup error.
 
 The plugin ships the `glm-agent:quota` skill. An orchestrator runs it before
 dispatching to `glm-agent:explorer` or `glm-agent:general-purpose`:
@@ -353,7 +365,8 @@ session ID. Avoid committing `~/.glm`, captured worker files, or shell output
 that may contain private task data.
 
 `quota` passes the API key to `curl` as a header read from stdin
-(`curl -H @-`), so the key never appears in a process argument list.
+(`curl -H @-`), so the key never appears in a process argument list. Saved
+team-scope selectors travel in the same stdin header block.
 `~/.glm/quota/` stores only the response body and curl's stderr.
 
 ## Development

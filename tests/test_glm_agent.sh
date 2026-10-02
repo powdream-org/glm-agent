@@ -427,8 +427,14 @@ assert_contains 'help distinguishes parent stop from worker cancel' "$help_outpu
   'Stopping a parent Claude turn leaves a detached worker running.'
 assert_contains 'help lists quota in the usage synopsis' "$help_output" \
   $'\n  glm-agent quota\n'
+assert_contains 'help lists team-scope in the usage synopsis' "$help_output" \
+  $'\n  glm-agent team-scope [<organization> <project> | --clear]\n'
 assert_contains 'help documents the quota command' "$help_output" \
   $'\n    quota\n'
+assert_contains 'help documents the team-scope command' "$help_output" \
+  $'\n  team-scope [<organization> <project> | --clear]\n'
+assert_contains 'help documents the quota scope field' "$help_output" \
+  'SCOPE=personal|team'
 assert_contains 'help documents quota status values' "$help_output" \
   'QUOTA_STATUS=OK|INVALID'
 assert_contains 'help documents the quota window format' "$help_output" \
@@ -445,7 +451,7 @@ assert_contains 'help documents the quota failure exit' "$help_output" \
   'quota exits 1 when the lookup failed'
 assert_contains 'help documents the quota stdin header' "$help_output" \
   'HTTP header that curl reads from'
-assert_eq 'version is available' 'glm-agent 0.5.0' "$($SCRIPT --version)"
+assert_eq 'version is available' 'glm-agent 0.6.0' "$($SCRIPT --version)"
 
 secret='zai-test-secret-value'
 capture "$SCRIPT" api-key "$secret"
@@ -1949,7 +1955,8 @@ quota_case() {
   shift 3
   : >"$FAKE_CURL_LOG"
   : >"$FAKE_CURL_STDIN"
-  capture env -u ZAI_BASE_URL ZAI_API_KEY="$QUOTA_KEY" \
+  capture env -u ZAI_BASE_URL -u ZAI_QUOTA_ORGANIZATION -u ZAI_QUOTA_PROJECT \
+    ZAI_API_KEY="$QUOTA_KEY" \
     GLM_AGENT_HOME="$QUOTA_HOME" FAKE_CURL_STATUS="$status" \
     FAKE_CURL_BODY_FILE="$body" FAKE_CURL_EXIT="$curl_exit" \
     FAKE_CURL_LOG="$FAKE_CURL_LOG" FAKE_CURL_STDIN="$FAKE_CURL_STDIN" \
@@ -1971,6 +1978,7 @@ make_quota_bin() {
 # --- quota: probe response, request shape, raw artifacts ---------------------
 expected_quota_ok="$(cat <<EOF
 QUOTA_STATUS=OK
+SCOPE=personal
 PLAN_LEVEL=lite
 LIMIT_COUNT=2
 LIMIT_1_TYPE=CREDIT_LIMIT
@@ -2084,6 +2092,103 @@ assert_eq 'quota keeps scheme host and port and drops the base path' \
 quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 ZAI_BASE_URL=http://127.0.0.1:9000
 assert_eq 'quota accepts a base URL with a port and no path' \
   'arg=http://127.0.0.1:9000/api/monitor/usage/quota/limit' \
+  "$(tail -n 1 "$FAKE_CURL_LOG")"
+
+# --- team-scope: stored selectors switch quota to the team plan ---------------
+QUOTA_ORG='org-Team42TestORG0123456789ab'
+QUOTA_PROJ='proj_Team42TestPRJ0123456789ab'
+TEAM_SCOPE_FILE="$QUOTA_HOME/.env.team-scope"
+expected_quota_ok_team="$(printf '%s\n' "$expected_quota_ok" |
+  sed 's/^SCOPE=personal$/SCOPE=team/')"
+
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope \
+  "$QUOTA_ORG" "$QUOTA_PROJ"
+assert_eq 'team-scope store succeeds' '0' "$RC"
+assert_eq 'team-scope store prints a receipt' \
+  $'TEAM_SCOPE=SAVED\nORGANIZATION='"$QUOTA_ORG"$'\nPROJECT='"$QUOTA_PROJ" \
+  "$OUTPUT"
+assert_eq 'team-scope file holds both selectors' \
+  $'organization='"$QUOTA_ORG"$'\nproject='"$QUOTA_PROJ" \
+  "$(cat "$TEAM_SCOPE_FILE")"
+assert_eq 'team-scope file is private' '600' "$(file_mode "$TEAM_SCOPE_FILE")"
+
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope
+assert_eq 'team-scope status reports the team scope' \
+  $'TEAM_SCOPE=team\nORGANIZATION='"$QUOTA_ORG"$'\nPROJECT='"$QUOTA_PROJ" \
+  "$OUTPUT"
+
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0
+assert_eq 'stored team scope keeps the lookup successful' '0' "$RC"
+assert_eq 'quota prints the documented fields for a team scope' \
+  "$expected_quota_ok_team" "$OUTPUT"
+assert_eq 'team scope targets the monitor endpoint with type=2' \
+  'arg=https://api.z.ai/api/monitor/usage/quota/limit?type=2' \
+  "$(tail -n 1 "$FAKE_CURL_LOG")"
+assert_eq 'team scope sends the key and selectors as stdin headers' \
+  $'Authorization: '"$QUOTA_KEY"$'\nBigmodel-Organization: '"$QUOTA_ORG"$'\nBigmodel-Project: '"$QUOTA_PROJ" \
+  "$(cat "$FAKE_CURL_STDIN")"
+assert_not_contains 'team scope keeps the organization out of curl argv' \
+  "$(cat "$FAKE_CURL_LOG")" "$QUOTA_ORG"
+assert_not_contains 'team scope keeps the project out of curl argv' \
+  "$(cat "$FAKE_CURL_LOG")" "$QUOTA_PROJ"
+
+quota_env_home="$TEST_ROOT/quota-env-home"
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$quota_env_home" \
+  ZAI_QUOTA_ORGANIZATION="$QUOTA_ORG" ZAI_QUOTA_PROJECT="$QUOTA_PROJ"
+assert_eq 'environment team scope keeps the lookup successful' '0' "$RC"
+assert_contains 'environment team scope prints SCOPE=team' "$OUTPUT" \
+  $'SCOPE=team\n'
+assert_eq 'environment team scope also targets type=2' \
+  'arg=https://api.z.ai/api/monitor/usage/quota/limit?type=2' \
+  "$(tail -n 1 "$FAKE_CURL_LOG")"
+
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 ZAI_QUOTA_PROJECT="$QUOTA_PROJ-2"
+assert_contains 'environment project overrides the stored project' \
+  "$(cat "$FAKE_CURL_STDIN")" "Bigmodel-Project: $QUOTA_PROJ-2"
+assert_contains 'the stored organization still applies' \
+  "$(cat "$FAKE_CURL_STDIN")" "Bigmodel-Organization: $QUOTA_ORG"
+
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$quota_env_home" \
+  ZAI_QUOTA_PROJECT="$QUOTA_PROJ"
+assert_eq 'one-sided team scope is a configuration error' '2||' \
+  "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
+assert_contains 'one-sided scope names the requirement' "$STDERR" \
+  'team scope needs both an organization and a project'
+
+printf 'organization=%s\n' "$QUOTA_ORG" >"$TEAM_SCOPE_FILE"
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0
+assert_eq 'malformed team scope file is a configuration error' '2||' \
+  "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
+assert_contains 'malformed scope error names the file' "$STDERR" \
+  "$TEAM_SCOPE_FILE"
+
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope "$QUOTA_ORG"
+assert_eq 'team-scope rejects a single selector' '2|' "$RC|$OUTPUT"
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope \
+  "$QUOTA_ORG" "$QUOTA_PROJ" extra
+assert_eq 'team-scope rejects three arguments' '2|' "$RC|$OUTPUT"
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope '' "$QUOTA_PROJ"
+assert_eq 'team-scope rejects an empty organization' '2|' "$RC|$OUTPUT"
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope \
+  "$QUOTA_ORG"$'\n' "$QUOTA_PROJ"
+assert_eq 'team-scope rejects a multi-line organization' '2|' "$RC|$OUTPUT"
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope \
+  --clear extra
+assert_eq 'team-scope --clear accepts no other arguments' '2|' "$RC|$OUTPUT"
+
+rm -f -- "$TEAM_SCOPE_FILE"
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope --clear
+assert_eq 'team-scope clear succeeds' '0' "$RC"
+assert_eq 'team-scope clear prints a receipt' 'TEAM_SCOPE=CLEARED' "$OUTPUT"
+capture env GLM_AGENT_HOME="$QUOTA_HOME" "$SCRIPT" team-scope
+assert_eq 'status without selectors reports the personal scope' \
+  $'TEAM_SCOPE=personal\nORGANIZATION=\nPROJECT=' "$OUTPUT"
+
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0
+assert_contains 'quota after clear reports the personal scope' "$OUTPUT" \
+  $'SCOPE=personal\n'
+assert_eq 'personal scope targets the endpoint without type=2' \
+  'arg=https://api.z.ai/api/monitor/usage/quota/limit' \
   "$(tail -n 1 "$FAKE_CURL_LOG")"
 
 # --- quota: usage and configuration errors (exit 2, empty stdout) ------------
@@ -2339,10 +2444,10 @@ printf '%s\n' '[]' >"$QUOTA_FIXTURES/array.json"
   >"$QUOTA_FIXTURES/bom.json"
 
 # assert_quota_failure <name> <error-kind> <provider-code>
-# Checks the exit status and the complete four-line failure output.
+# Checks the exit status and the complete five-line failure output.
 assert_quota_failure() {
   local name="$1" kind="$2" code="$3" expected
-  expected="$(printf 'QUOTA_STATUS=INVALID\nRESPONSE=%s\nERROR_KIND=%s\nPROVIDER_CODE=%s' \
+  expected="$(printf 'QUOTA_STATUS=INVALID\nSCOPE=personal\nRESPONSE=%s\nERROR_KIND=%s\nPROVIDER_CODE=%s' \
     "$QUOTA_HOME/quota/response.json" "$kind" "$code")"
   assert_eq "$name" "1|$expected" "$RC|$OUTPUT"
 }
