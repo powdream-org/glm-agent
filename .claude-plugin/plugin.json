@@ -1,6 +1,6 @@
 {
   "name": "glm-agent",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Persistent Z.ai GLM workers for Claude Code orchestration",
   "author": {
     "name": "Heejoon Kang"
