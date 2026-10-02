@@ -1852,6 +1852,13 @@ FAKE_CURL_STDIN="$TEST_ROOT/curl.stdin"
 QUOTA_SEEN=''
 mkdir -p "$QUOTA_FIXTURES"
 
+# store_quota_key <key>: seeds the stored credential quota reads.
+store_quota_key() {
+  printf '%s\n' "$1" >"$QUOTA_HOME/.env.auth"
+}
+mkdir -p "$QUOTA_HOME"
+store_quota_key "$QUOTA_KEY"
+
 cat >"$FAKE_BIN/curl" <<'FAKE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -1949,14 +1956,20 @@ quota_record() {
 }
 
 # quota_case <http-status> <body-file-or-empty> <curl-exit> [VAR=value ...]
-# Runs "glm-agent quota" against the fake curl and records the run.
+# Runs "glm-agent quota" against the fake curl and records the run. A
+# GLM_AGENT_HOME override is seeded with the stored key first.
 quota_case() {
-  local status="$1" body="$2" curl_exit="$3"
+  local status="$1" body="$2" curl_exit="$3" var home="$QUOTA_HOME"
   shift 3
+  for var in "$@"; do
+    [[ "$var" == GLM_AGENT_HOME=* ]] && home="${var#GLM_AGENT_HOME=}"
+  done
+  mkdir -p "$home"
+  [[ -f "$home/.env.auth" ]] || printf '%s\n' "$QUOTA_KEY" >"$home/.env.auth"
   : >"$FAKE_CURL_LOG"
   : >"$FAKE_CURL_STDIN"
-  capture env -u ZAI_BASE_URL -u ZAI_QUOTA_ORGANIZATION -u ZAI_QUOTA_PROJECT \
-    ZAI_API_KEY="$QUOTA_KEY" \
+  capture env -u ZAI_API_KEY -u ZAI_BASE_URL -u ZAI_QUOTA_ORGANIZATION \
+    -u ZAI_QUOTA_PROJECT \
     GLM_AGENT_HOME="$QUOTA_HOME" FAKE_CURL_STATUS="$status" \
     FAKE_CURL_BODY_FILE="$body" FAKE_CURL_EXIT="$curl_exit" \
     FAKE_CURL_LOG="$FAKE_CURL_LOG" FAKE_CURL_STDIN="$FAKE_CURL_STDIN" \
@@ -2192,7 +2205,7 @@ assert_eq 'personal scope targets the endpoint without type=2' \
   "$(tail -n 1 "$FAKE_CURL_LOG")"
 
 # --- quota: usage and configuration errors (exit 2, empty stdout) ------------
-capture env ZAI_API_KEY="$QUOTA_KEY" GLM_AGENT_HOME="$QUOTA_HOME" \
+capture env -u ZAI_API_KEY GLM_AGENT_HOME="$QUOTA_HOME" \
   "$SCRIPT" quota extra
 quota_record
 assert_eq 'quota rejects extra arguments' '2|' "$RC|$OUTPUT"
@@ -2200,12 +2213,14 @@ assert_contains 'quota argument error is clear' "$STDERR" \
   'quota does not accept arguments'
 
 for bad_key in "$QUOTA_KEY"$'\rtail' "$QUOTA_KEY"$'\ntail'; do
-  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 ZAI_API_KEY="$bad_key"
+  store_quota_key "$bad_key"
+  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0
   assert_eq 'multi-line API key is rejected before curl runs' \
     '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
   assert_contains 'multi-line API key error names the problem' "$STDERR" \
     'API key must be a single line'
 done
+store_quota_key "$QUOTA_KEY"
 
 for bad_url in 'ftp://example.test' 'example.test/x' \
   'https://user@example.test/x' 'https://example.test:8a/x' \
@@ -2214,6 +2229,25 @@ for bad_url in 'ftp://example.test' 'example.test/x' \
   assert_eq "ZAI_BASE_URL [$bad_url] is rejected before curl runs" \
     '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
 done
+
+# The ZAI_API_KEY environment variable is never read: the stored file is the
+# only key source, and an exported variable alone cannot authenticate quota.
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 ZAI_API_KEY='env-key-ignored-by-quota'
+assert_eq 'quota ignores an exported ZAI_API_KEY' '0' "$RC"
+assert_contains 'quota sends the stored key, not the env key' \
+  "$(cat "$FAKE_CURL_STDIN")" "Authorization: $QUOTA_KEY"
+
+envonly_home="$TEST_ROOT/quota-envonly-home"
+capture env ZAI_API_KEY="$QUOTA_KEY" GLM_AGENT_HOME="$envonly_home" "$SCRIPT" quota
+quota_record
+assert_eq 'quota with only an env key is a configuration error' '2|' "$RC|$OUTPUT"
+assert_contains 'env-only key error gives the setup instruction' "$STDERR" \
+  'Run: glm-agent api-key'
+if [[ ! -e "$envonly_home" ]]; then
+  pass 'env-only key creates no state'
+else
+  fail 'env-only key creates no state' "unexpected path: $envonly_home"
+fi
 
 nokey_home="$TEST_ROOT/quota-nokey-home"
 capture env -u ZAI_API_KEY GLM_AGENT_HOME="$nokey_home" "$SCRIPT" quota
@@ -2238,7 +2272,7 @@ assert_contains 'quota empty key error is clear' "$STDERR" \
   'stored API key is empty'
 
 make_quota_bin "$TEST_ROOT/quota-bin-no-curl" curl
-capture env PATH="$TEST_ROOT/quota-bin-no-curl" ZAI_API_KEY="$QUOTA_KEY" \
+capture env -u ZAI_API_KEY PATH="$TEST_ROOT/quota-bin-no-curl" \
   GLM_AGENT_HOME="$QUOTA_HOME" "$BASH" "$SCRIPT" quota
 quota_record
 assert_eq 'quota without curl is a dependency error' '2|' "$RC|$OUTPUT"
@@ -2246,7 +2280,7 @@ assert_contains 'quota names the missing curl' "$STDERR" \
   'required command not found: curl'
 
 make_quota_bin "$TEST_ROOT/quota-bin-no-jq" jq
-capture env PATH="$TEST_ROOT/quota-bin-no-jq" ZAI_API_KEY="$QUOTA_KEY" \
+capture env -u ZAI_API_KEY PATH="$TEST_ROOT/quota-bin-no-jq" \
   GLM_AGENT_HOME="$QUOTA_HOME" "$BASH" "$SCRIPT" quota
 quota_record
 assert_eq 'quota without jq is a dependency error' '2|' "$RC|$OUTPUT"
@@ -2255,21 +2289,11 @@ assert_contains 'quota names the missing jq' "$STDERR" \
 
 # --- quota: state and temp-file failures are setup errors (exit 2) ------------
 # No exit path may end with status 1 and no QUOTA_STATUS line.
-quota_ro_parent="$TEST_ROOT/quota-ro"
-quota_ro_home="$quota_ro_parent/home"
-mkdir -p "$quota_ro_parent"
-chmod 500 "$quota_ro_parent"
-if [[ "$(id -u)" == 0 ]]; then
-  pass 'quota unwritable state home (skipped: root ignores directory modes)'
-  pass 'quota names the unwritable state home (skipped: root)'
-else
-  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$quota_ro_home"
-  assert_eq 'quota with an unwritable state home is a setup error' \
-    '2||' "$RC|$OUTPUT|$(cat "$FAKE_CURL_LOG")"
-  assert_contains 'quota names the unwritable state home' "$STDERR" \
-    "$quota_ro_home"
-fi
-chmod 700 "$quota_ro_parent"
+# A home that cannot be created at all is no longer reachable here: the key
+# file lives inside the home, so an unwritable parent blocks the key read
+# first, and an existing home is always chmod-able by its owner. The blocked
+# quota directory and the mktemp/mv failures below cover the writable-state
+# failures.
 
 quota_blocked_home="$TEST_ROOT/quota-blocked-home"
 mkdir -p "$quota_blocked_home"
@@ -2372,9 +2396,11 @@ done
 quota_term_home="$TEST_ROOT/quota-term-home"
 quota_term_started="$TEST_ROOT/quota-term.started"
 quota_term_release="$TEST_ROOT/quota-term.release"
+mkdir -p "$quota_term_home"
+printf '%s\n' "$QUOTA_KEY" >"$quota_term_home/.env.auth"
 : >"$FAKE_CURL_LOG"
 : >"$FAKE_CURL_STDIN"
-env -u ZAI_BASE_URL ZAI_API_KEY="$QUOTA_KEY" GLM_AGENT_HOME="$quota_term_home" \
+env -u ZAI_API_KEY -u ZAI_BASE_URL GLM_AGENT_HOME="$quota_term_home" \
   FAKE_CURL_STATUS=200 FAKE_CURL_BODY_FILE="$QUOTA_FIXTURES/ok.json" \
   FAKE_CURL_EXIT=0 FAKE_CURL_LOG="$FAKE_CURL_LOG" \
   FAKE_CURL_STDIN="$FAKE_CURL_STDIN" \
@@ -2398,7 +2424,7 @@ assert_eq 'TERM during a quota lookup leaves no temp file behind' '' \
 # --- quota: the API key is never printed or stored ---------------------------
 assert_not_contains 'quota success and configuration cases never print the key' \
   "$QUOTA_SEEN" "$QUOTA_KEY"
-if grep -rqF -- "$QUOTA_KEY" "$QUOTA_HOME"; then
+if grep -rqF --exclude='.env.auth' -- "$QUOTA_KEY" "$QUOTA_HOME"; then
   fail 'quota state files never contain the key' "key found under $QUOTA_HOME"
 else
   pass 'quota state files never contain the key'
@@ -2565,7 +2591,7 @@ assert_eq 'failures leave exactly the two raw artifacts' \
   $'response.json\nstderr.log' "$(ls -A "$QUOTA_HOME/quota")"
 assert_not_contains 'quota failure cases never print the key' \
   "$QUOTA_SEEN" "$QUOTA_KEY"
-if grep -rqF -- "$QUOTA_KEY" "$QUOTA_HOME"; then
+if grep -rqF --exclude='.env.auth' -- "$QUOTA_KEY" "$QUOTA_HOME"; then
   fail 'quota failure artifacts never contain the key' \
     "key found under $QUOTA_HOME"
 else

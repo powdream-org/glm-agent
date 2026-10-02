@@ -58,15 +58,14 @@ Use the hidden interactive prompt so the key is not recorded in shell history:
 glm-agent api-key
 ```
 
-The key is stored at `~/.glm/.env.auth` with mode `0600`. You can instead set
-`ZAI_API_KEY` for the current process; the environment variable takes
-precedence over the stored value.
+The key is stored at `~/.glm/.env.auth` with mode `0600`. glm-agent reads the
+key only from this file; the `ZAI_API_KEY` environment variable is never read.
 
 Passing a key as an argument is supported for automation, but may expose it in
 shell history or process listings:
 
 ```bash
-glm-agent api-key "$ZAI_API_KEY"
+glm-agent api-key "<key>"
 ```
 
 ## Quick start

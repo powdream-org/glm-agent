@@ -71,6 +71,8 @@ API_TIMEOUT_MS=3000000
 Unset inherited `CLAUDECODE` before invoking Claude. The default Claude alias
 is `sonnet`. Authentication is stored at `~/.glm/.env.auth`, unless
 `GLM_AGENT_HOME` changes the state root, and the key must never be logged.
+The stored file is the only key source; the `ZAI_API_KEY` environment
+variable is never read and is stripped from the Claude process environment.
 
 ## Implementation rules
 
