@@ -141,23 +141,27 @@ The parent or a later bridge uses the recorded worker ID to wait, inspect,
 continue, or cancel it. Cancellation signals the managed provider process group,
 preserves partial artifacts, and records `INVALID/interrupted`.
 
-## Managed Claude Code TUI
+## Plain Claude Code TUI
 
-Open a new Z.ai-backed native Claude Code TUI as a managed worker:
-
-```bash
-glm-agent tui --role general-purpose --model sonnet --cwd /path/to/project
-```
-
-Re-enter the exact stored session later:
+Open a plain interactive Z.ai-backed Claude Code session. The session is your
+own main conversation: glm-agent creates no worker, injects no worker contract
+system prompt, and writes no result files.
 
 ```bash
-glm-agent tui <worker-id>
+glm-agent tui --model sonnet --cwd /path/to/project
 ```
 
-Attach always uses the worker's stored cwd, role, model, and Claude session,
-independent of the caller's cwd. Each open/close interval creates a TUI batch
-with `mode`, `prompt.md`, `stderr.log`, `result.md`, and `exit.meta` artifacts.
+The command prints the allocated `SESSION_ID` before the session starts;
+reopen that exact session later with:
+
+```bash
+glm-agent tui --resume <session-id>
+```
+
+`--resume` accepts the session id printed by an earlier `tui` invocation (or
+any Claude Code session id). Claude Code has no session-name resume, so pass
+the id itself. Worker sessions managed by `start`/`send` are not attachable
+through `tui`; use `send` for those.
 
 ## Commands
 
@@ -171,8 +175,7 @@ with `mode`, `prompt.md`, `stderr.log`, `result.md`, and `exit.meta` artifacts.
 | `send --async <worker-id> <message>` | Resume the same session in a detached turn. |
 | `wait [--timeout <seconds>] <worker-id>` | Wait up to 0–300 seconds for terminal state. |
 | `cancel <worker-id>` | Interrupt an active asynchronous headless turn. |
-| `tui [creation options]` | Create a managed worker and open native Claude Code. |
-| `tui <worker-id>` | Attach to the worker's stored TUI session and cwd. |
+| `tui [--model <alias>] [--cwd <dir>] [--resume <id>]` | Open a plain interactive Claude Code session (no worker). |
 | `result <worker-id>` | Print the latest valid durable result path. |
 | `status <worker-id>` | Print compact worker state without exposing the session ID. |
 | `list` | List known workers. |

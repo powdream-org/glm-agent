@@ -38,8 +38,7 @@ USAGE
   glm-agent send --async <worker-id> <message>
   glm-agent wait [--timeout <seconds>] <worker-id>
   glm-agent cancel <worker-id>
-  glm-agent tui [--role <role>] [--model <alias>] [--cwd <directory>]
-  glm-agent tui <worker-id>
+  glm-agent tui [--model <alias>] [--cwd <directory>] [--resume <session-id>]
   glm-agent result <worker-id>
   glm-agent status <worker-id>
   glm-agent list
@@ -52,8 +51,9 @@ DESCRIPTION
   glm-agent runs GLM through Claude Code using Z.ai's Anthropic-compatible
   endpoint. A worker is durable across invocations: start creates a Claude
   session and send resumes that same session in its original directory with
-  its original role and model. tui opens that same managed session in native
-  Claude Code. --async returns worker identity before provider completion.
+  its original role and model. tui opens a plain interactive Claude Code
+  session with no worker framing. --async returns worker identity before
+  provider completion.
 
   stdout is compact and machine-readable. Detailed reports, raw Claude JSON,
   and stderr are stored under ~/.glm/workers/<worker-id>/.
@@ -119,12 +119,13 @@ COMMANDS
       a replacement turn already started) — treat it like WAIT_RESULT=TIMEOUT
       and retry cancel or wait.
 
-  tui [--role <role>] [--model <alias>] [--cwd <directory>]
-      Create a managed worker and open its Z.ai-backed native Claude Code TUI.
-
-  tui <worker-id>
-      Open the worker's stored Claude session in its original cwd, role, and
-      model. Creation options are invalid when attaching.
+  tui [--model <alias>] [--cwd <directory>] [--resume <session-id>]
+      Open a plain interactive Z.ai-backed Claude Code session. This is the
+      User's own main session: no worker is created, no worker contract
+      system prompt or result file is injected, and the session interacts
+      with the terminal directly. A new session prints its SESSION_ID so it
+      can be reopened later with --resume. Claude Code itself has no
+      session-name resume; use the printed session id.
 
   result <worker-id>
       Print the absolute path to the latest valid durable result file.
@@ -137,7 +138,7 @@ COMMANDS
 
   close <worker-id>
       Mark an idle worker closed. This does not delete its history. A closed
-      worker remains available to result and status but rejects send and tui.
+      worker remains available to result and status but rejects send.
 
     quota
         Query Z.ai's monitor API once and print the credit quota per window.
@@ -1735,131 +1736,51 @@ cmd_start() {
   fi
 }
 
-run_tui_batch() {
-  local worker_id="$1"
-  local session_mode="$2"
-  local dir
-  local turn
-  local turn_label
-  local turn_dir
-  local result_file
-  local stderr_file
-  local exit_meta
-  local model
-  local role
-  local cwd
-  local session_id
-  local system_prompt
-  local started_at
-  local exit_code=0
-  local result_status
-  local provider_code
-  local error_kind
-  local generation
-  local runner_start
-  local -a args
+# Opens the User's own interactive Claude Code session. There is no worker,
+# no turn bookkeeping, and no worker contract system prompt: the session is
+# the main conversation, not a subagent, and must not believe otherwise.
+run_tui_session() {
+  local mode="$1" session_id="$2" cwd="$3" model="$4" exit_code=0
 
-  validate_worker_execution "$worker_id"
-  dir="$(worker_dir "$worker_id")"
-  model="$(meta_get "$dir" model)"
-  role="$(meta_get "$dir" role)"
-  cwd="$(meta_get "$dir" cwd)"
-  session_id="$(meta_get "$dir" claude_session_id)"
-  [[ -n "$session_id" ]] || die "worker has no Claude session: $worker_id"
-
-  turn="$(prepare_turn "$worker_id" "Managed Claude Code TUI batch" "tui")"
-  generation="$(active_get "$dir" generation)"
-  runner_start="$(process_start_identity "$$")"
-  active_update "$dir" "$generation" supervision "tui" runner_pid "$$" \
-    runner_start "$runner_start"
-  printf -v turn_label '%04d' "$turn"
-  turn_dir="$dir/turns/$turn_label"
-  result_file="$turn_dir/result.md"
-  stderr_file="$turn_dir/stderr.log"
-  exit_meta="$turn_dir/exit.meta"
-  system_prompt="$(build_turn_system_prompt "$role" "$result_file")"
-
-  args=(
-    --model "$model"
-    --dangerously-skip-permissions
-    --append-system-prompt "$system_prompt"
-  )
-  if [[ "$session_mode" == "new" ]]; then
-    args+=(--session-id "$session_id")
+  if [[ "$mode" == resume ]]; then
+    printf 'RESUME=%s\n' "$session_id"
   else
-    args+=(--resume "$session_id")
+    printf 'SESSION_ID=%s\n' "$session_id"
   fi
-
-  print_turn_control "$dir" "$turn" "RUNNING" "$result_file" "" ""
   printf 'CWD=%s\n' "$cwd"
-  started_at="$(date +%s)"
-  (
-    cd "$cwd"
-    GLM_RESULT_FILE="$result_file" run_glm_claude "${args[@]}"
-  ) 2>"$stderr_file" || exit_code=$?
-  chmod 600 "$stderr_file"
-  (
-    umask 077
-    cat >"$exit_meta" <<EOF
-started_at=$started_at
-ended_at=$(date +%s)
-exit_code=$exit_code
-EOF
-  )
 
-  if ((exit_code != 0)); then
-    provider_code="$(extract_zai_code /dev/null "$stderr_file")"
-    error_kind="$(classify_error_kind "$provider_code" "invocation")"
-    invalidate_turn "$dir" "$turn" "$result_file" "claude-exit-$exit_code" \
-      "$error_kind" "$provider_code" "$generation"
-    return 1
+  local -a args=(--model "$model" --dangerously-skip-permissions)
+  if [[ "$mode" == resume ]]; then
+    args+=(--resume "$session_id")
+  else
+    args+=(--session-id "$session_id")
   fi
-  if [[ ! -s "$result_file" ]]; then
-    invalidate_turn "$dir" "$turn" "$result_file" "result-file-missing" \
-      "worker-protocol" "" "$generation"
-    return 1
-  fi
-  chmod 600 "$result_file"
-  case "$(tail -n 1 "$result_file")" in
-    'STATUS: DONE') result_status="DONE" ;;
-    'STATUS: BLOCKED') result_status="BLOCKED" ;;
-    *)
-      invalidate_turn "$dir" "$turn" "$result_file" \
-        "result-status-invalid" "worker-protocol" "" "$generation"
-      return 1
-      ;;
-  esac
 
-  meta_update "$dir" status "$result_status" latest_result "$result_file" \
-    error_kind "" provider_code ""
-  release_worker_lock "$dir" "$generation"
-  print_turn_control "$dir" "$turn" "$result_status" "$result_file" "" ""
+  (cd "$cwd" && run_glm_claude "${args[@]}") || exit_code=$?
+  printf 'EXIT_CODE=%d\n' "$exit_code"
+  return "$exit_code"
 }
 
 cmd_tui() {
   local model="$CLAUDE_MODEL"
-  local role="$DEFAULT_ROLE"
   local cwd="$PWD"
-  local creation_option=false
+  local resume_id=""
 
   while (($#)); do
     case "$1" in
       --model)
         (($# >= 2)) || die "--model requires a value"
         model="$2"
-        creation_option=true
-        shift 2
-        ;;
-      --role)
-        (($# >= 2)) || die "--role requires a value"
-        role="$2"
-        creation_option=true
         shift 2
         ;;
       --cwd)
         (($# >= 2)) || die "--cwd requires a value"
         cwd="$2"
-        creation_option=true
+        shift 2
+        ;;
+      --resume)
+        (($# >= 2)) || die "--resume requires a Claude session id"
+        resume_id="$2"
         shift 2
         ;;
       --help|-h)
@@ -1867,46 +1788,28 @@ cmd_tui() {
         return 0
         ;;
       --*) die "unknown option for tui: $1" ;;
-      *) break ;;
+      *)
+        die "tui does not accept positional arguments; resume a session with --resume <session-id>"
+        ;;
     esac
   done
-  (($# <= 1)) || die "tui accepts at most one worker-id"
 
   require_execution_dependencies
   load_api_key
-  require_system_prompt_file
-  if (($# == 1)); then
-    [[ "$creation_option" == "false" ]] ||
-      die "TUI creation options cannot be used with an existing worker"
-    local worker_id="$1"
-    local dir
-    require_worker "$worker_id"
-    dir="$(worker_dir "$worker_id")"
-    recover_stale_lock "$dir"
-    [[ "$(meta_get "$dir" closed)" != "true" ]] ||
-      die "worker is closed: $worker_id"
-    [[ ! -d "$dir/active" ]] || die "worker is active: $worker_id"
-    [[ -n "$(meta_get "$dir" claude_session_id)" ]] ||
-      die "worker has no Claude session: $worker_id"
-    run_tui_batch "$worker_id" "resume"
-    return
-  fi
-
   validate_single_line "model" "$model"
   [[ -n "$model" ]] || die "model must not be empty"
-  validate_single_line "role" "$role"
-  validate_role "$role"
   [[ -d "$cwd" ]] || die "working directory does not exist: $cwd"
   cwd="$(cd "$cwd" && pwd -P)"
   validate_single_line "working directory" "$cwd"
-  require_command od
+  if [[ -n "$resume_id" ]]; then
+    validate_single_line "session id" "$resume_id"
+    [[ -n "$resume_id" ]] || die "session id must not be empty"
+    run_tui_session resume "$resume_id" "$cwd" "$model" || exit $?
+    return
+  fi
 
-  local session_id
-  local worker_id
-  session_id="$(new_claude_session_id)"
-  worker_id="$(create_worker "$model" "$role" "$cwd" \
-    "Managed Claude Code TUI worker" "$session_id")"
-  run_tui_batch "$worker_id" "new"
+  require_command od
+  run_tui_session new "$(new_claude_session_id)" "$cwd" "$model" || exit $?
 }
 
 cmd_send() {
