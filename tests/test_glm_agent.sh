@@ -451,7 +451,7 @@ assert_contains 'help documents the quota failure exit' "$help_output" \
   'quota exits 1 when the lookup failed'
 assert_contains 'help documents the quota stdin header' "$help_output" \
   'HTTP header that curl reads from'
-assert_eq 'version is available' 'glm-agent 0.6.0' "$($SCRIPT --version)"
+assert_eq 'version is available' 'glm-agent 0.7.0' "$($SCRIPT --version)"
 
 secret='zai-test-secret-value'
 capture "$SCRIPT" api-key "$secret"
