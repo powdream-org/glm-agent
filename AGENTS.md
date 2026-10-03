@@ -24,11 +24,22 @@ Claude JSON, and stderr belong under the worker directory.
 - `agents/`: thin Claude Code bridges for explorer and general-purpose workers.
 - `skills/`: Claude Code skills; `skills/quota/SKILL.md` is the quota gate that
   runs before work is dispatched to GLM or native Claude.
+- `skills/dispatch/SKILL.md`: how the main session calls `glm-dispatch`.
+- `scripts/glm-dispatch`: entry point of the dispatch script (Bash), which
+  sources `scripts/lib/dispatch-*.sh`.
+- `scripts/lib/dispatch-*.sh`: dispatch modules (arguments, quota gate,
+  registry, run, wait, git snapshot, subcommands); each file only defines
+  functions.
 - `scripts/bump-version.sh`: synchronized CLI/plugin/marketplace version bump.
 - `tests/test_glm_agent.sh`: hermetic CLI tests using fake `claude` and `curl`
   binaries.
 - `tests/test_plugin.sh`: plugin schema, bridge contract, skill contract, and
   version tests.
+- `tests/test_dispatch.sh`: runs every `tests/dispatch/test_*.sh` and sums the
+  TAP counts.
+- `tests/dispatch/`: dispatch tests, the shared harness `lib.sh` (fake
+  `claude`, `curl`, and CLI), and `quota-rows.tsv`, which the core tests and
+  the skill contract test both read.
 - `README.md`: public installation, usage, behavior, and security documentation.
 - `LICENSE`: MIT License terms for the project.
 - `CLAUDE.md`: compatibility symlink; never replace it with an independent copy.
@@ -97,8 +108,9 @@ Run before declaring work complete:
 ```bash
 bash tests/test_glm_agent.sh
 bash tests/test_plugin.sh
-bash -n glm-agent tests/test_glm_agent.sh tests/test_plugin.sh scripts/bump-version.sh
-shellcheck glm-agent tests/test_glm_agent.sh tests/test_plugin.sh scripts/bump-version.sh
+bash tests/test_dispatch.sh
+bash -n glm-agent scripts/glm-dispatch scripts/lib/dispatch-*.sh tests/*.sh tests/dispatch/*.sh scripts/bump-version.sh
+shellcheck --external-sources --source-path=SCRIPTDIR glm-agent scripts/glm-dispatch scripts/lib/dispatch-*.sh tests/*.sh tests/dispatch/*.sh scripts/bump-version.sh
 claude plugin validate --strict .
 ```
 

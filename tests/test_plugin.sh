@@ -108,6 +108,32 @@ assert_contains 'README documents the stdin header' "$readme" \
   'curl -H @-'
 assert_contains 'AGENTS.md lists the skills directory' \
   "$(cat "$REPO_DIR/AGENTS.md")" 'skills/quota/SKILL.md'
+agents_md="$(cat "$REPO_DIR/AGENTS.md")"
+assert_contains 'README documents the glm-dispatch script' "$readme" 'glm-dispatch'
+assert_contains 'README documents the dispatch skill' "$readme" 'glm-agent:dispatch'
+assert_contains 'README has a Dispatch section' "$readme" $'\n## Dispatch\n'
+assert_contains 'README recommends glm-dispatch from the main session' "$readme" \
+  'is the recommended path'
+assert_contains 'README marks the bridge agents as not recommended' "$readme" \
+  'bridge agents are not recommended'
+for line_name in GLM_BLOCKED GLM_NOT_REACHED GLM_RECEIPT GLM_VERDICT GLM_WARN \
+  GLM_STALLED GLM_STILL_RUNNING; do
+  assert_contains "README documents $line_name" "$readme" "$line_name"
+done
+for subcommand in run send attach pending ack status result cancel close; do
+  assert_contains "README lists the $subcommand subcommand" "$readme" "| \`$subcommand\` |"
+done
+for exit_code in 10 11 12 13; do
+  assert_contains "README documents dispatch exit code $exit_code" "$readme" "| $exit_code |"
+done
+for option in --task-file --max-wait --stall-timeout --poll-seconds --allow-path \
+  --est-credits --small; do
+  assert_contains "README documents the dispatch option $option" "$readme" "$option"
+done
+for layout_entry in scripts/glm-dispatch 'scripts/lib/dispatch-' tests/test_dispatch.sh \
+  tests/dispatch/ skills/dispatch/SKILL.md 'bash tests/test_dispatch.sh'; do
+  assert_contains "AGENTS.md mentions $layout_entry" "$agents_md" "$layout_entry"
+done
 
 if [[ -f "$plugin_json" ]]; then
   assert_eq 'plugin name' 'glm-agent' "$(jq -r '.name' "$plugin_json")"
@@ -127,7 +153,7 @@ if [[ -f "$plugin_json" && -f "$marketplace_json" ]]; then
   assert_eq 'CLI and plugin versions match' "$cli_version" "$plugin_version"
   assert_eq 'CLI and marketplace versions match' "$cli_version" \
     "$marketplace_version"
-  assert_eq 'release version is 0.8.0' '0.8.0' "$cli_version"
+  assert_eq 'release version is 0.9.0' '0.9.0' "$cli_version"
 fi
 if [[ -f "$explorer_agent" ]]; then
   explorer_content="$(cat "$explorer_agent")"
