@@ -135,6 +135,26 @@ dd_emit_result_sections() {
   dd_extract_section "$1" "Remaining Issues"
 }
 
+dd_emit_response_section() {
+  local status="$1" class="$2" result="$3" worker="$4" turn="$5" file text
+  if [[ "$status" != INVALID || "$class" != worker-protocol || -n "$result" ]]; then
+    return 0
+  fi
+  if [[ ! "$turn" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  file="$(dd_state_home)/workers/$worker/turns/$(printf '%04d' "$((10#$turn))")/response.json"
+  if [[ ! -f "$file" ]]; then
+    return 0
+  fi
+  text="$(jq -r 'select(type == "object" and .is_error == false and (.result | type) == "string" and (.result | test("\\S"))) | .result' "$file" 2>/dev/null)" || return 0
+  if [[ -z "$text" ]]; then
+    return 0
+  fi
+  printf -- '--- Response ---\n'
+  printf '%s\n' "$text" | awk 'NR <= 20 { print } NR == 21 { print "... (truncated)" }'
+}
+
 dd_format_delta() {
   if ! dd_is_number "$1" || ! dd_is_number "$2"; then
     printf 'unknown\n'
@@ -173,6 +193,7 @@ dd_emit_verdict() {
   dd_git_report "$label"
   printf 'GLM_VERDICT label=%s worker=%s status=%s class=%s result=%s files_changed=%s quota_1w_delta=%s fallback=%s\n' \
     "$label" "$worker" "$status" "$class" "$(dd_encode_token "${result:--}")" "$DD_FILES_CHANGED" "$delta" "$fallback"
+  dd_emit_response_section "$status" "$class" "$result" "$worker" "$turn"
   dd_emit_result_sections "$result"
   [[ "$status" == DONE ]]
 }

@@ -409,7 +409,7 @@ modified when the worker started.
 | `GLM_VERDICT status=DONE` | The worker finished. | Check the result file and `files_changed`. |
 | `GLM_VERDICT status=BLOCKED` | The worker declared itself blocked. | Read the result file and decide. |
 | `GLM_VERDICT status=INVALID class=quota-exhausted` | The quota ran out during the turn. | Go native after `reset_at`; the working tree changes remain. |
-| `GLM_VERDICT status=INVALID class=worker-protocol` | The result contract was violated; the work may be done. | Verify the result and the diff when `files_changed` is above 0; otherwise retry. |
+| `GLM_VERDICT status=INVALID class=worker-protocol` | The result contract was violated; the work may be done, possibly in another repository. | Read the `--- Response ---` section and decide. Verify the result and the diff when the reply reports completion or `files_changed` is above 0. `files_changed=0` alone is not a reason to retry; retry only when there is no response section. |
 | `GLM_VERDICT status=INVALID class=<other>` | An authentication, model, or transient failure. | Record the class and ask the User. |
 | `GLM_WARN explorer_modified files=...` | An explorer changed files. | Inspect the files and decide on rollback. |
 | `GLM_WARN out_of_scope files=...` | Files outside every `--allow-path` glob changed. | Inspect the files and decide on rollback. |
@@ -417,7 +417,10 @@ modified when the worker started.
 | `GLM_STILL_RUNNING ...` | `--max-wait` was reached; the worker keeps running. | `attach` again or `cancel`. |
 
 `GLM_VERDICT` is followed by the `# Summary` and `# Remaining Issues` sections
-of the result file, each cut at 20 lines.
+of the result file, each cut at 20 lines. When a `worker-protocol` turn has no
+result file, `GLM_VERDICT` is followed instead by a `--- Response ---` section
+with the first 20 lines of the worker reply, provided `jq` is available and the
+turn's `response.json` has `is_error` false and a non-empty string `.result`.
 
 | Exit code | Line |
 | --- | --- |

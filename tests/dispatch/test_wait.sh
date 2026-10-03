@@ -102,7 +102,7 @@ assert_contains 'a malformed result is classified worker-protocol' \
   "$(verdict_of)" ' class=worker-protocol '
 run_wait missing "$TEST_ROOT/missing.md"
 assert_eq 'a missing result file omits both section headers' 0 \
-  "$(grep -c '^--- ' <<<"$OUTPUT" || true)"
+  "$(grep -c -E '^--- (Summary|Remaining Issues) ---$' <<<"$OUTPUT" || true)"
 
 run_wait long "$TEST_ROOT/long.md"
 summary_lines="$(sed -n '/^--- Summary ---$/,/^--- Remaining Issues ---$/p' <<<"$OUTPUT" | sed '1d;$d')"
