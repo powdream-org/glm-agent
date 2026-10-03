@@ -2,7 +2,7 @@
 DD_USAGE='usage: glm-dispatch <subcommand> --session <id> [options]
 subcommands: run send attach pending ack status result cancel close
 common options: --session <id> (required), --label <name> (all but pending)
-run: [--role explorer|general-purpose] [--model haiku|sonnet|opus] [--cwd <dir>]
+run: --role explorer|general-purpose --model haiku|sonnet|opus --cwd <dir>
      --task-file <path> [--wait] [--max-wait <s>] [--stall-timeout <s>]
      [--poll-seconds <s>] [--small] [--est-credits <n>] [--allow-path <glob>]...
 send: --task-file <path> [--wait] [--max-wait <s>] [--stall-timeout <s>]
@@ -48,17 +48,28 @@ dd_encode_token() {
   printf '%s\n' "${1// /%20}"
 }
 
+dd_decode_token() {
+  printf '%s\n' "${1//\%20/ }"
+}
+
 dd_read_file_exact() {
   DD_FILE_CONTENT="$(cat "$1"; printf x)"
   DD_FILE_CONTENT="${DD_FILE_CONTENT%x}"
 }
 
+dd_read_brief() {
+  dd_read_file_exact "$1"
+  if [[ "$DD_FILE_CONTENT" == -* ]]; then
+    DD_FILE_CONTENT=$'\n'"$DD_FILE_CONTENT"
+  fi
+}
+
 dd_init_options() {
   export DD_SESSION=""
   export DD_LABEL=""
-  export DD_ROLE="general-purpose"
-  export DD_MODEL="sonnet"
-  export DD_CWD="$PWD"
+  export DD_ROLE=""
+  export DD_MODEL=""
+  export DD_CWD=""
   export DD_TASK_FILE=""
   export DD_WAIT=false
   export DD_MAX_WAIT=7000
@@ -114,13 +125,13 @@ dd_check_integer() {
 }
 
 dd_validate_task_file() {
+  local size
   [[ -n "$DD_TASK_FILE" ]] || dd_fail "--task-file is required"
   [[ -f "$DD_TASK_FILE" && -r "$DD_TASK_FILE" ]] ||
     dd_fail "task file is not readable: $DD_TASK_FILE"
   [[ -s "$DD_TASK_FILE" ]] || dd_fail "task file is empty: $DD_TASK_FILE"
-  if [[ "$(head -c 1 "$DD_TASK_FILE")" == - ]]; then
-    dd_fail "task file must not start with a dash: $DD_TASK_FILE"
-  fi
+  size="$(wc -c <"$DD_TASK_FILE" | tr -d ' ')"
+  ((size <= 262144)) || dd_fail "task-file too large (max 262144 bytes)"
 }
 
 dd_validate_numbers() {
@@ -130,14 +141,17 @@ dd_validate_numbers() {
 }
 
 dd_validate_run_options() {
+  [[ -n "$DD_ROLE" ]] || dd_fail "--role is required"
   case "$DD_ROLE" in
     explorer|general-purpose) ;;
     *) dd_fail "--role must be explorer or general-purpose" ;;
   esac
+  [[ -n "$DD_MODEL" ]] || dd_fail "--model is required"
   case "$DD_MODEL" in
     haiku|sonnet|opus) ;;
     *) dd_fail "--model must be haiku, sonnet, or opus" ;;
   esac
+  [[ -n "$DD_CWD" ]] || dd_fail "--cwd is required"
   [[ -d "$DD_CWD" ]] || dd_fail "--cwd is not a directory: $DD_CWD"
   DD_CWD="$(cd "$DD_CWD" && pwd -P)"
   if [[ -n "$DD_EST_CREDITS" ]]; then

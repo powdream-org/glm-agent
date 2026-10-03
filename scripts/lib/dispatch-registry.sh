@@ -16,6 +16,10 @@ dd_registry_get() {
   dd_kv_get_file "$(dd_registry_file "$1" "$2")" "$3"
 }
 
+dd_registry_get_cwd() {
+  dd_decode_token "$(dd_registry_get "$1" "$2" cwd)"
+}
+
 dd_registry_put() {
   local session="$1" label="$2" dir file tmp line existing_key skip i j
   shift 2

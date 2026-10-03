@@ -385,11 +385,21 @@ glm-dispatch run --label fx3-android --role general-purpose --model sonnet \
 | `close` | Calls the CLI `close` for the label; a RUNNING worker is refused and `cancel` is the way to stop it. |
 
 `--session` is required. `--label` is required for every subcommand except
-`pending`. `run` takes `--role`, `--model`, `--cwd`, `--task-file`, `--wait`,
-`--max-wait` (default 7000 seconds), `--stall-timeout` (default 300 seconds,
-`0` turns it off), `--poll-seconds` (default 20), `--small`,
+`pending`. `run` requires `--role`, `--model`, `--cwd`, and `--task-file`; the
+first three have no default and a missing one exits 2. `run` also takes
+`--wait`, `--max-wait` (default 7000 seconds), `--stall-timeout` (default 300
+seconds, `0` turns it off), `--poll-seconds` (default 20), `--small`,
 `--est-credits <n>`, and a repeatable `--allow-path <glob>`. `send` takes
 `--task-file` and the wait options; `attach` takes only the wait options.
+
+A task file that starts with `-` is sent behind one newline byte so that the
+CLI reads it as the task and not as an option. A task file larger than 262144
+bytes exits 2 before any quota check. A `cwd` that contains spaces is written
+with each space as `%20` in `GLM_RECEIPT` and in the registry file. Stall
+detection compares the CPU time of the worker's process group and runs only
+when that CPU time is readable. `files_changed` counts an untracked directory
+as one entry and does not detect further edits to a file that was already
+modified when the worker started.
 
 | Line | Meaning | Next action |
 | --- | --- | --- |

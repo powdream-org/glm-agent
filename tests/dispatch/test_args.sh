@@ -44,57 +44,57 @@ expect_usage_error 'run without --session is rejected' \
 expect_usage_error 'run without --label is rejected' \
   run --session s1 --task-file "$BRIEF"
 expect_usage_error 'run without --task-file is rejected' \
-  run --session s1 --label l1
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT"
 expect_usage_error 'session with a space is rejected' \
-  run --session 'bad session' --label l1 --task-file "$BRIEF"
+  run --session 'bad session' --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF"
 expect_usage_error 'session with a slash is rejected' \
-  run --session 'a/b' --label l1 --task-file "$BRIEF"
+  run --session 'a/b' --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF"
 expect_usage_error 'session dot-dot is rejected' \
-  run --session .. --label l1 --task-file "$BRIEF"
+  run --session .. --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF"
 expect_usage_error 'label starting with a dash is rejected' \
-  run --session s1 --label -bad --task-file "$BRIEF"
+  run --session s1 --label -bad --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF"
 expect_usage_error 'label with a slash is rejected' \
-  run --session s1 --label a/b --task-file "$BRIEF"
+  run --session s1 --label a/b --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF"
 expect_usage_error 'label longer than 64 characters is rejected' \
-  run --session s1 --label "$LONG_LABEL" --task-file "$BRIEF"
+  run --session s1 --label "$LONG_LABEL" --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF"
 expect_usage_error 'role outside the allowed set is rejected' \
-  run --session s1 --label l1 --role planner --task-file "$BRIEF"
+  run --session s1 --label l1 --model sonnet --cwd "$PROJECT" --role planner --task-file "$BRIEF"
 expect_usage_error 'model outside the allowed set is rejected' \
-  run --session s1 --label l1 --model gpt --task-file "$BRIEF"
+  run --session s1 --label l1 --role general-purpose --cwd "$PROJECT" --model gpt --task-file "$BRIEF"
 expect_usage_error 'cwd that is not a directory is rejected' \
-  run --session s1 --label l1 --cwd "$TEST_ROOT/nope" --task-file "$BRIEF"
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$TEST_ROOT/nope" --task-file "$BRIEF"
 expect_usage_error 'missing task file is rejected' \
-  run --session s1 --label l1 --task-file "$MISSING_BRIEF"
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$MISSING_BRIEF"
 expect_usage_error 'empty task file is rejected' \
-  run --session s1 --label l1 --task-file "$EMPTY_BRIEF"
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$EMPTY_BRIEF"
 if [[ "$(id -u)" != 0 ]]; then
   expect_usage_error 'unreadable task file is rejected' \
-    run --session s1 --label l1 --task-file "$UNREADABLE_BRIEF"
+    run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$UNREADABLE_BRIEF"
 fi
 expect_usage_error 'max-wait zero is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --max-wait 0
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --max-wait 0
 expect_usage_error 'max-wait that is not a number is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --max-wait abc
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --max-wait abc
 expect_usage_error 'negative max-wait is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --max-wait -5
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --max-wait -5
 expect_usage_error 'fractional max-wait is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --max-wait 1.5
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --max-wait 1.5
 expect_usage_error 'poll-seconds zero is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --poll-seconds 0
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --poll-seconds 0
 expect_usage_error 'poll-seconds above 300 is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --poll-seconds 301
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --poll-seconds 301
 expect_usage_error 'negative stall-timeout is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --stall-timeout -1
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --stall-timeout -1
 expect_usage_error 'stall-timeout that is not a number is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --stall-timeout abc
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --stall-timeout abc
 expect_usage_error 'est-credits zero is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --est-credits 0
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --est-credits 0
 expect_usage_error 'unknown option is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --bogus
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --bogus
 expect_usage_error 'option without a value is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" --role
+  run --session s1 --label l1 --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" --role
 expect_usage_error 'positional argument is rejected' \
-  run --session s1 --label l1 --task-file "$BRIEF" extra
+  run --session s1 --label l1 --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$BRIEF" extra
 
 expect_usage_error 'send without --task-file is rejected' \
   send --session s1 --label l1

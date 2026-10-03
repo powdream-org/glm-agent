@@ -44,7 +44,7 @@ dd_porcelain_paths() {
 dd_changed_files() {
   local session="$1" label="$2" head cwd status_file
   head="$(dd_registry_get "$session" "$label" git_head)"
-  cwd="$(dd_registry_get "$session" "$label" cwd)"
+  cwd="$(dd_registry_get_cwd "$session" "$label")"
   if [[ -z "$head" || "$head" == none ]]; then
     return 1
   fi

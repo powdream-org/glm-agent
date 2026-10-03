@@ -18,7 +18,7 @@ run_wait() {
   local label="$1" brief="$2"
   shift 2
   next_session
-  dispatch run --session "$SESSION" --label "$label" --cwd "$PROJECT" \
+  dispatch run --session "$SESSION" --label "$label" --role general-purpose --model sonnet --cwd "$PROJECT" \
     --task-file "$brief" --wait --poll-seconds 1 "$@"
   WORKER="$(receipt_worker "$OUTPUT")"
 }
@@ -56,7 +56,7 @@ use_spy_cli
 new_block race3
 next_session
 race_out="$TEST_ROOT/race3.out"
-"$BASH" "$DISPATCH" run --session "$SESSION" --label during --cwd "$PROJECT" \
+"$BASH" "$DISPATCH" run --session "$SESSION" --label during --role general-purpose --model sonnet --cwd "$PROJECT" \
   --task-file "$BLOCK" --wait --poll-seconds 1 >"$race_out" 2>&1 &
 race_pid=$!
 wait_for_file "$FAKE_CLAUDE_BLOCK_STARTED"
@@ -173,7 +173,7 @@ assert_contains 'the result file of the current turn prints its sections' "$OUTP
 
 use_real_cli
 next_session
-dispatch run --session "$SESSION" --label twoturn --cwd "$PROJECT" --task-file "$PLAIN" --wait --poll-seconds 1
+dispatch run --session "$SESSION" --label twoturn --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$PLAIN" --wait --poll-seconds 1
 dispatch send --session "$SESSION" --label twoturn --task-file "$TEST_ROOT/fail.md" --wait --poll-seconds 1
 assert_contains 'an INVALID second turn reports no result path' "$(verdict_of)" ' status=INVALID '
 assert_contains 'an INVALID second turn does not reuse the first turn result' "$(verdict_of)" ' result=- '
@@ -184,7 +184,7 @@ fake_cli_set status "$(fake_status DONE "$FAKE_RESULT" '' false)"
 fake_cli_seq wait 1 $'WORKER_ID=w-fake\nWAIT_RESULT=TIMEOUT'
 fake_cli_seq wait 2 $'WORKER_ID=w-fake\nWAIT_RESULT=TERMINAL'
 next_session
-dispatch run --session "$SESSION" --label poll --cwd "$PROJECT" --task-file "$PLAIN" \
+dispatch run --session "$SESSION" --label poll --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$PLAIN" \
   --wait --max-wait 3 --poll-seconds 5
 first_timeout="$(sed -n '1,/^call=2$/p' "$FAKE_CLI_DIR/wait.argv" | sed -n 's/^arg=//p' | sed -n '3p')"
 if [[ "$first_timeout" =~ ^[0-9]+$ ]] && ((first_timeout >= 2 && first_timeout <= 3)); then
@@ -196,7 +196,7 @@ assert_eq 'two wait calls were needed' 2 "$(fake_cli_calls wait)"
 
 prepare_fake
 next_session
-dispatch run --session "$SESSION" --label nowait --cwd "$PROJECT" --task-file "$PLAIN"
+dispatch run --session "$SESSION" --label nowait --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$PLAIN"
 assert_eq 'run without --wait never calls wait or status' "0|0" \
   "$(fake_cli_calls wait)|$(fake_cli_calls status)"
 

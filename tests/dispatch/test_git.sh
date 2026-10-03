@@ -20,7 +20,7 @@ git_run() {
   local label="$1" role="$2" brief="$3" cwd="$4"
   shift 4
   next_session
-  dispatch run --session "$SESSION" --label "$label" --role "$role" --cwd "$cwd" \
+  dispatch run --session "$SESSION" --label "$label" --model sonnet --role "$role" --cwd "$cwd" \
     --task-file "$TEST_ROOT/$brief" --wait --poll-seconds 1 "$@"
   VERDICT="$(grep '^GLM_VERDICT' <<<"$OUTPUT" || true)"
   WARNS="$(grep '^GLM_WARN' <<<"$OUTPUT" || true)"

@@ -59,7 +59,7 @@ dd_cmd_run() {
   fi
   dd_gate_quota || exit $?
   dd_git_snapshot "$DD_CWD"
-  dd_read_file_exact "$DD_TASK_FILE"
+  dd_read_brief "$DD_TASK_FILE"
   out="$(dd_cli start --async --role "$DD_ROLE" --model "$DD_MODEL" --cwd "$DD_CWD" "$DD_FILE_CONTENT")" || rc=$?
   if ! dd_check_receipt "$rc" "$out" "$DD_ROLE" "$DD_MODEL" "$DD_CWD" 0; then
     dd_emit_not_reached "$DD_REASON" || exit $?
@@ -68,7 +68,7 @@ dd_cmd_run() {
   turn="$(dd_kv_get "$out" TURN)"
   dd_registry_put "$DD_SESSION" "$DD_LABEL" \
     label "$DD_LABEL" worker_id "$worker" role "$DD_ROLE" model "$DD_MODEL" \
-    cwd "$DD_CWD" task_file "$(dd_absolute_path "$DD_TASK_FILE")" \
+    cwd "$(dd_encode_token "$DD_CWD")" task_file "$(dd_absolute_path "$DD_TASK_FILE")" \
     started_at "$(dd_now_utc)" scope "$DD_QUOTA_SCOPE" \
     quota_5h_used "$DD_QUOTA_5H_USED" quota_1w_used "$DD_QUOTA_1W_USED" \
     git_head "$DD_GIT_HEAD" git_status_hash "$DD_GIT_STATUS_HASH" \

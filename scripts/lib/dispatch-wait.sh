@@ -48,7 +48,7 @@ dd_sample_progress() {
   DD_SIG_CPU=""
   pgid="$(dd_kv_get_file "$dir/active/state" provider_pgid 2>/dev/null || true)"
   if [[ "$pgid" =~ ^[1-9][0-9]*$ ]]; then
-    DD_SIG_CPU="$(dd_group_cpu "$pgid")"
+    DD_SIG_CPU="$(dd_group_cpu "$pgid" || true)"
   fi
 }
 
@@ -87,7 +87,8 @@ dd_wait_terminal() {
       TIMEOUT)
         dd_sample_progress "$worker" "$turn"
         now="$(date +%s)"
-        if [[ "$DD_SIG_FILES" != "$prev_files" ]] || dd_cpu_grew "$prev_cpu" "$DD_SIG_CPU"; then
+        if [[ -z "$prev_cpu" || -z "$DD_SIG_CPU" || "$DD_SIG_FILES" != "$prev_files" ]] ||
+           dd_cpu_grew "$prev_cpu" "$DD_SIG_CPU"; then
           last_progress="$now"
         fi
         prev_files="$DD_SIG_FILES"

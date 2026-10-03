@@ -19,11 +19,11 @@ dd_cmd_send() {
   dd_require_label
   role="$(dd_registry_get "$DD_SESSION" "$DD_LABEL" role)"
   model="$(dd_registry_get "$DD_SESSION" "$DD_LABEL" model)"
-  cwd="$(dd_registry_get "$DD_SESSION" "$DD_LABEL" cwd)"
+  cwd="$(dd_registry_get_cwd "$DD_SESSION" "$DD_LABEL")"
   previous_turn="$(dd_registry_get "$DD_SESSION" "$DD_LABEL" turn)"
   dd_gate_quota || exit $?
   dd_git_snapshot "$cwd"
-  dd_read_file_exact "$DD_TASK_FILE"
+  dd_read_brief "$DD_TASK_FILE"
   out="$(dd_cli send --async "$DD_WORKER" "$DD_FILE_CONTENT")" || rc=$?
   if ! dd_check_receipt "$rc" "$out" "$role" "$model" "$cwd" "$previous_turn"; then
     dd_emit_not_reached "$DD_REASON" || exit $?

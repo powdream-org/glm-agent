@@ -23,7 +23,7 @@ assert_eq 'CPU times in minute, hour, and day formats are summed per process gro
 use_spy_cli
 new_silent_block quiet
 next_session
-dispatch run --session "$SESSION" --label stalled --cwd "$PROJECT" \
+dispatch run --session "$SESSION" --label stalled --role general-purpose --model sonnet --cwd "$PROJECT" \
   --task-file "$TEST_ROOT/silent.md" --wait --poll-seconds 1 --stall-timeout 2 --max-wait 60
 worker="$(receipt_worker "$OUTPUT")"
 idle="$(sed -n "s/^GLM_STALLED label=stalled worker=$worker idle_seconds=\([0-9]*\)\$/\1/p" <<<"$OUTPUT")"
@@ -47,7 +47,7 @@ wait_terminal "$worker"
 
 new_silent_block quiet2
 next_session
-dispatch run --session "$SESSION" --label unlimited --cwd "$PROJECT" \
+dispatch run --session "$SESSION" --label unlimited --role general-purpose --model sonnet --cwd "$PROJECT" \
   --task-file "$TEST_ROOT/silent.md" --wait --poll-seconds 1 --stall-timeout 0 --max-wait 4
 worker="$(receipt_worker "$OUTPUT")"
 assert_eq '--stall-timeout 0 disables stall detection' 13 "$RC"
@@ -59,7 +59,7 @@ use_spy_cli
 new_silent_block files
 next_session
 out_file="$TEST_ROOT/files.out"
-"$BASH" "$DISPATCH" run --session "$SESSION" --label files --cwd "$PROJECT" \
+"$BASH" "$DISPATCH" run --session "$SESSION" --label files --role general-purpose --model sonnet --cwd "$PROJECT" \
   --task-file "$TEST_ROOT/files.md" --wait --poll-seconds 1 --stall-timeout 2 >"$out_file" 2>&1 &
 pid=$!
 wait_for_file "$FAKE_CLAUDE_BLOCK_STARTED"
@@ -75,7 +75,7 @@ use_spy_cli
 new_block burn
 next_session
 out_file="$TEST_ROOT/burn.out"
-"$BASH" "$DISPATCH" run --session "$SESSION" --label burn --cwd "$PROJECT" \
+"$BASH" "$DISPATCH" run --session "$SESSION" --label burn --role general-purpose --model sonnet --cwd "$PROJECT" \
   --task-file "$TEST_ROOT/burn.md" --wait --poll-seconds 1 --stall-timeout 2 >"$out_file" 2>&1 &
 pid=$!
 wait_for_file "$FAKE_CLAUDE_BLOCK_STARTED"

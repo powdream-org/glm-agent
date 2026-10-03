@@ -14,7 +14,7 @@ REGISTRY="$GLM_AGENT_HOME/dispatch"
 start_label() {
   local label="$1" brief="$2"
   shift 2
-  dispatch run --session "$SESSION" --label "$label" --cwd "$PROJECT" \
+  dispatch run --session "$SESSION" --label "$label" --role general-purpose --model sonnet --cwd "$PROJECT" \
     --task-file "$TEST_ROOT/$brief" "$@"
   WORKER="$(receipt_worker "$OUTPUT")"
 }
@@ -131,7 +131,7 @@ wait_terminal "$quiet_worker"
 GIT_PROJECT="$TEST_ROOT/send-git"
 make_git_project "$GIT_PROJECT"
 next_session
-dispatch run --session "$SESSION" --label gitrun --role explorer --cwd "$GIT_PROJECT" \
+dispatch run --session "$SESSION" --label gitrun --model sonnet --role explorer --cwd "$GIT_PROJECT" \
   --task-file "$TEST_ROOT/create.md" --wait --poll-seconds 1
 assert_contains 'the first turn counts the new file' "$OUTPUT" ' files_changed=1 '
 dispatch send --session "$SESSION" --label gitrun --task-file "$TEST_ROOT/touch.md" \
@@ -148,7 +148,7 @@ fake_cli_set quota "$(fake_quota_healthy)"
 fake_cli_set start "$(fake_receipt w-1 1 sonnet general-purpose RUNNING)"
 fake_worker_meta w-1 general-purpose sonnet "$PROJECT"
 next_session
-dispatch run --session "$SESSION" --label fk --cwd "$PROJECT" --task-file "$TEST_ROOT/quick.md"
+dispatch run --session "$SESSION" --label fk --role general-purpose --model sonnet --cwd "$PROJECT" --task-file "$TEST_ROOT/quick.md"
 assert_eq 'the fake run registers the label' 0 "$RC"
 send_case() {
   dispatch send --session "$SESSION" --label fk --task-file "$TEST_ROOT/followup.md"
