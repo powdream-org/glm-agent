@@ -20,5 +20,6 @@ DD_ROOT_DIR="$(cd "$DD_SCRIPT_DIR/.." && pwd -P)"
 DD_CLI="${GLM_DISPATCH_CLI:-$DD_ROOT_DIR/glm-agent}"
 
 source "$DD_SCRIPT_DIR/lib/dispatch-common.sh"
+source "$DD_SCRIPT_DIR/lib/dispatch-quota.sh"
 
 dd_main "$@"

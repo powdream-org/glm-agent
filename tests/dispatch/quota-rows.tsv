@@ -1,0 +1,9 @@
+1	authentication
+2	quota-exhausted
+3	fail-open
+4	TIME_LIMIT
+4	REMAINING
+5	USED_PERCENT>=90
+5	USED_PERCENT>=98
+5	--small
+7	--est-credits
