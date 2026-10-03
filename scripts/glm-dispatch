@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+dd_resolve_path() {
+  local path="$1" dir target
+  while [[ -L "$path" ]]; do
+    dir="$(cd "$(dirname "$path")" && pwd -P)"
+    target="$(readlink "$path")"
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$dir/$target" ;;
+    esac
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+
+DD_SELF="$(dd_resolve_path "${BASH_SOURCE[0]}")"
+DD_SCRIPT_DIR="$(dirname "$DD_SELF")"
+DD_ROOT_DIR="$(cd "$DD_SCRIPT_DIR/.." && pwd -P)"
+DD_CLI="${GLM_DISPATCH_CLI:-$DD_ROOT_DIR/glm-agent}"
+
+source "$DD_SCRIPT_DIR/lib/dispatch-common.sh"
+
+dd_main "$@"
