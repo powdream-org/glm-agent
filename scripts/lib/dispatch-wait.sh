@@ -5,9 +5,69 @@ dd_emit_still_running() {
   return 13
 }
 
+dd_emit_stalled() {
+  printf 'GLM_STALLED label=%s worker=%s idle_seconds=%s\n' "$1" "$2" "$3"
+  return 12
+}
+
+dd_sum_cpu_times() {
+  awk -v pg="$1" '
+    $1 == pg {
+      t = $2
+      days = 0
+      if (index(t, "-") > 0) { split(t, d, "-"); days = d[1]; t = d[2] }
+      frac = 0
+      if (index(t, ".") > 0) { split(t, f, "."); t = f[1]; frac = f[2] / 100 }
+      n = split(t, p, ":")
+      secs = 0
+      for (i = 1; i <= n; i++) secs = secs * 60 + p[i]
+      total += days * 86400 + secs + frac
+      seen = 1
+    }
+    END { if (seen) printf "%.2f\n", total }'
+}
+
+dd_group_cpu() {
+  ps -axo pgid=,time= 2>/dev/null | dd_sum_cpu_times "$1"
+}
+
+dd_files_signature() {
+  local file
+  if [[ ! -d "$1" ]]; then
+    return 0
+  fi
+  find "$1" -type f | sort | while IFS= read -r file; do
+    stat -f '%N %z %m' "$file" 2>/dev/null || stat -c '%n %s %Y' "$file"
+  done
+}
+
+dd_sample_progress() {
+  local dir pgid
+  dir="$(dd_state_home)/workers/$1"
+  DD_SIG_FILES="$(dd_files_signature "$dir/turns/$(printf '%04d' "$2")")"
+  DD_SIG_CPU=""
+  pgid="$(dd_kv_get_file "$dir/active/state" provider_pgid 2>/dev/null || true)"
+  if [[ "$pgid" =~ ^[1-9][0-9]*$ ]]; then
+    DD_SIG_CPU="$(dd_group_cpu "$pgid")"
+  fi
+}
+
+dd_cpu_grew() {
+  if [[ -z "$1" || -z "$2" ]]; then
+    return 1
+  fi
+  dd_number_test "$2" ">" "$1"
+}
+
 dd_wait_terminal() {
-  local label="$1" worker="$2" started elapsed timeout remaining out result
+  local label="$1" worker="$2" started now elapsed timeout remaining out result
+  local turn last_progress idle prev_files prev_cpu
   started="$(date +%s)"
+  turn="$(dd_registry_get "$DD_SESSION" "$label" turn)"
+  last_progress="$started"
+  dd_sample_progress "$worker" "$turn"
+  prev_files="$DD_SIG_FILES"
+  prev_cpu="$DD_SIG_CPU"
   while :; do
     elapsed=$(($(date +%s) - started))
     if ((elapsed >= DD_MAX_WAIT)); then
@@ -21,9 +81,25 @@ dd_wait_terminal() {
     out="$(dd_cli wait --timeout "$timeout" "$worker" 2>/dev/null)" || true
     result="$(dd_kv_get "$out" WAIT_RESULT)"
     case "$result" in
-      TERMINAL) return 0 ;;
-      TIMEOUT) ;;
-      *) sleep "$DD_POLL" ;;
+      TERMINAL)
+        return 0
+        ;;
+      TIMEOUT)
+        dd_sample_progress "$worker" "$turn"
+        now="$(date +%s)"
+        if [[ "$DD_SIG_FILES" != "$prev_files" ]] || dd_cpu_grew "$prev_cpu" "$DD_SIG_CPU"; then
+          last_progress="$now"
+        fi
+        prev_files="$DD_SIG_FILES"
+        prev_cpu="$DD_SIG_CPU"
+        idle=$((now - last_progress))
+        if ((DD_STALL_TIMEOUT > 0 && idle >= DD_STALL_TIMEOUT)); then
+          dd_emit_stalled "$label" "$worker" "$idle" || return $?
+        fi
+        ;;
+      *)
+        sleep "$DD_POLL"
+        ;;
     esac
   done
 }

@@ -58,10 +58,29 @@ if [[ "$prompt" == *WAIT_FOR_RELEASE* ]]; then
     [[ -f "$FAKE_CLAUDE_BLOCK_STARTED" ]] || exit 19
     ticks=$((ticks + 1))
     ((ticks < 1200)) || exit 18
-    if [[ "$prompt" == *PROGRESS_WHILE_BLOCKED* ]]; then
-      printf '%s\n' "$ticks" >>"$turn_dir/progress.log"
-    fi
     sleep 0.1
+  done
+fi
+
+if [[ "$prompt" == *BLOCK_SILENT* ]]; then
+  : >"$FAKE_CLAUDE_BLOCK_STARTED"
+  exec 3<>"$FAKE_CLAUDE_SILENT_FIFO"
+  read -t 120 -u 3 -r _ || exit 18
+fi
+if [[ "$prompt" == *PROGRESS_SILENT* ]]; then
+  : >"$FAKE_CLAUDE_BLOCK_STARTED"
+  exec 3<>"$FAKE_CLAUDE_SILENT_FIFO"
+  ticks=0
+  while ! read -t 1 -u 3 -r _; do
+    ticks=$((ticks + 1))
+    printf '%s\n' "$ticks" >>"$turn_dir/progress.log"
+    ((ticks < 120)) || exit 18
+  done
+fi
+if [[ "$prompt" == *BURN_CPU* ]]; then
+  : >"$FAKE_CLAUDE_BLOCK_STARTED"
+  while [[ ! -f "$FAKE_CLAUDE_BLOCK_RELEASE" ]]; do
+    [[ -f "$FAKE_CLAUDE_BLOCK_STARTED" ]] || exit 19
   done
 fi
 
@@ -441,6 +460,29 @@ wait_for_text() {
   local i
   for ((i = 0; i < 1000; i++)); do
     if grep -q "$2" "$1" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.02
+  done
+  return 1
+}
+
+new_silent_block() {
+  export FAKE_CLAUDE_BLOCK_STARTED="$TEST_ROOT/$1.started"
+  export FAKE_CLAUDE_BLOCK_RELEASE="$TEST_ROOT/$1.release"
+  export FAKE_CLAUDE_SILENT_FIFO="$TEST_ROOT/$1.fifo"
+  rm -f "$FAKE_CLAUDE_BLOCK_STARTED" "$FAKE_CLAUDE_BLOCK_RELEASE" "$FAKE_CLAUDE_SILENT_FIFO"
+  mkfifo "$FAKE_CLAUDE_SILENT_FIFO"
+}
+
+release_silent_block() {
+  printf '\n' >"$FAKE_CLAUDE_SILENT_FIFO"
+}
+
+wait_for_lines() {
+  local i
+  for ((i = 0; i < 1000; i++)); do
+    if (($(wc -l <"$1") >= $2)); then
       return 0
     fi
     sleep 0.02

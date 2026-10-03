@@ -15,6 +15,7 @@ dd_number_test() {
     b += 0
     if (op == "<=") r = (a <= b)
     else if (op == "<") r = (a < b)
+    else if (op == ">") r = (a > b)
     else r = (a >= b)
     exit !r
   }'
