@@ -44,6 +44,10 @@ dd_kv_get_file() {
   sed -n "/^$2=/{s/^$2=//p;q;}" "$1"
 }
 
+dd_encode_token() {
+  printf '%s\n' "${1// /%20}"
+}
+
 dd_read_file_exact() {
   DD_FILE_CONTENT="$(cat "$1"; printf x)"
   DD_FILE_CONTENT="${DD_FILE_CONTENT%x}"
@@ -114,6 +118,9 @@ dd_validate_task_file() {
   [[ -f "$DD_TASK_FILE" && -r "$DD_TASK_FILE" ]] ||
     dd_fail "task file is not readable: $DD_TASK_FILE"
   [[ -s "$DD_TASK_FILE" ]] || dd_fail "task file is empty: $DD_TASK_FILE"
+  if [[ "$(head -c 1 "$DD_TASK_FILE")" == - ]]; then
+    dd_fail "task file must not start with a dash: $DD_TASK_FILE"
+  fi
 }
 
 dd_validate_numbers() {

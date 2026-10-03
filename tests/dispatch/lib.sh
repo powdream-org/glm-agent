@@ -162,6 +162,7 @@ printf '%s' "$count" >"$dir/$sub.count"
     printf 'arg=%s\n' "$arg"
   done
 } >>"$dir/$sub.argv"
+printf '%s' "${*: -1}" >"$dir/$sub.lastarg"
 file="$dir/$sub.out.$count"
 if [[ ! -f "$file" ]]; then
   file="$dir/$sub.out"
@@ -384,4 +385,50 @@ make_git_project() {
   printf 'base\n' >"$dir/tracked.txt"
   git -C "$dir" add tracked.txt
   git -C "$dir" commit -q -m init
+}
+
+fake_quota_healthy() {
+  printf 'QUOTA_STATUS=OK\nSCOPE=personal\nPLAN_LEVEL=max\nLIMIT_COUNT=2\n'
+  printf 'LIMIT_1_TYPE=CREDIT_LIMIT\nLIMIT_1_WINDOW=5h\nLIMIT_1_TOTAL=35000\nLIMIT_1_USED=2789\n'
+  printf 'LIMIT_1_REMAINING=32211\nLIMIT_1_USED_PERCENT=7\nLIMIT_1_RESET_AT=2026-10-03T05:37:58Z\n'
+  printf 'LIMIT_2_TYPE=CREDIT_LIMIT\nLIMIT_2_WINDOW=1w\nLIMIT_2_TOTAL=155000\nLIMIT_2_USED=37560\n'
+  printf 'LIMIT_2_REMAINING=117440\nLIMIT_2_USED_PERCENT=24\nLIMIT_2_RESET_AT=2026-10-09T07:29:02Z\n'
+  printf 'RESPONSE=/tmp/r.json\nERROR_KIND=\nPROVIDER_CODE=\n'
+}
+
+fake_receipt() {
+  printf 'WORKER_ID=%s\nTURN=%s\nMODEL=%s\nROLE=%s\nSTATUS=%s\n' "$1" "$2" "$3" "$4" "$5"
+  printf 'RESULT=%s/workers/%s/turns/%04d/result.md\n' "$GLM_AGENT_HOME" "$1" "$2"
+  printf 'ERROR_KIND=\nPROVIDER_CODE=\nFALLBACK_RECOMMENDED=false\n'
+}
+
+fake_worker_meta() {
+  mkdir -p "$GLM_AGENT_HOME/workers/$1"
+  printf 'worker_id=%s\nrole=%s\nmodel=%s\ncwd=%s\nstatus=%s\n' \
+    "$1" "$2" "$3" "$4" "${5:-RUNNING}" >"$GLM_AGENT_HOME/workers/$1/meta"
+}
+
+wait_terminal() {
+  "$REAL_CLI" wait --timeout 20 "$1" >/dev/null
+}
+
+IN_DIR_SCRIPT="$TEST_ROOT/in-dir.sh"
+cat >"$IN_DIR_SCRIPT" <<'INDIR'
+cd "$1"
+shift
+exec "$@"
+INDIR
+
+dispatch_in() {
+  local dir="$1"
+  shift
+  capture "$BASH" "$IN_DIR_SCRIPT" "$dir" "$BASH" "$DISPATCH" "$@"
+}
+
+receipt_worker() {
+  sed -n 's/.* worker=\([^ ]*\) .*/\1/p' <<<"$1"
+}
+
+count_entries() {
+  find "$1" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' '
 }
