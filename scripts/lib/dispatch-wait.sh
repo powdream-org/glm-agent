@@ -148,7 +148,7 @@ dd_format_delta() {
 }
 
 dd_emit_verdict() {
-  local label="$1" worker="$2" out status class result fallback delta
+  local label="$1" worker="$2" out status class result fallback delta turn
   out="$(dd_cli status "$worker" 2>/dev/null)" || true
   status="$(dd_kv_get "$out" STATUS)"
   case "$status" in
@@ -160,6 +160,10 @@ dd_emit_verdict() {
     class=-
   fi
   result="$(dd_kv_get "$out" RESULT)"
+  turn="$(dd_kv_get "$out" TURN)"
+  if [[ ! "$turn" =~ ^[0-9]+$ || "$result" != *"/turns/$(printf '%04d' "$((10#$turn))")/result.md" ]]; then
+    result=""
+  fi
   fallback="$(dd_kv_get "$out" FALLBACK_RECOMMENDED)"
   if [[ "$fallback" != true ]]; then
     fallback=false

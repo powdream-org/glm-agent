@@ -28,8 +28,8 @@ Claude JSON, and stderr belong under the worker directory.
 - `scripts/glm-dispatch`: entry point of the dispatch script (Bash), which
   sources `scripts/lib/dispatch-*.sh`.
 - `scripts/lib/dispatch-*.sh`: dispatch modules (arguments, quota gate,
-  registry, run, wait, git snapshot, subcommands); each file only defines
-  functions.
+  registry, run, wait, git snapshot, subcommands); each file is sourced, never
+  run, and defines functions and shared text.
 - `scripts/bump-version.sh`: synchronized CLI/plugin/marketplace version bump.
 - `tests/test_glm_agent.sh`: hermetic CLI tests using fake `claude` and `curl`
   binaries.

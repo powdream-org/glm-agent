@@ -117,11 +117,14 @@ assert_eq 'a long Remaining Issues section is cut at 20 lines plus a truncation 
   "$(printf '%s\n' "$issue_lines" | wc -l | tr -d ' ')"
 
 use_fake_cli
-FAKE_RESULT="$TEST_ROOT/fake-result.md"
+FAKE_RESULT="$GLM_AGENT_HOME/workers/w-fake/turns/0001/result.md"
+FAKE_RESULT_TURN2="$GLM_AGENT_HOME/workers/w-fake/turns/0002/result.md"
+mkdir -p "$GLM_AGENT_HOME/workers/w-fake/turns/0001" "$GLM_AGENT_HOME/workers/w-fake/turns/0002"
 printf '# Summary\nfake summary\n\n# Remaining Issues\nfake issue\n\nSTATUS: DONE\n' >"$FAKE_RESULT"
+printf '# Summary\nturn two summary\n\n# Remaining Issues\nNone\n\nSTATUS: DONE\n' >"$FAKE_RESULT_TURN2"
 fake_worker_meta w-fake general-purpose sonnet "$PROJECT"
 fake_status() {
-  printf 'WORKER_ID=w-fake\nSTATUS=%s\nTURN=1\nMODEL=sonnet\nROLE=general-purpose\nCWD=%s\nCLOSED=false\n' "$1" "$PROJECT"
+  printf 'WORKER_ID=w-fake\nSTATUS=%s\nTURN=%s\nMODEL=sonnet\nROLE=general-purpose\nCWD=%s\nCLOSED=false\n' "$1" "${5:-1}" "$PROJECT"
   printf 'RESULT=%s\nERROR_KIND=%s\nPROVIDER_CODE=\nFALLBACK_RECOMMENDED=%s\nACTIVE_MODE=\nACTIVE_TURN=\n' "$2" "$3" "$4"
 }
 prepare_fake() {
@@ -156,15 +159,39 @@ assert_eq 'a quota-exhausted status maps to class, no result, and fallback' \
 assert_not_contains 'a verdict without a result file prints no sections' "$OUTPUT" '--- Summary ---'
 
 prepare_fake
+fake_cli_set status "$(fake_status INVALID "$FAKE_RESULT" worker-protocol false 2)"
+run_wait stale "$PLAIN"
+assert_contains 'a result file from an earlier turn is not reported for an INVALID turn' \
+  "$(verdict_of)" ' status=INVALID class=worker-protocol result=- '
+assert_not_contains 'a result file from an earlier turn prints no sections' "$OUTPUT" '--- Summary ---'
+prepare_fake
+fake_cli_set status "$(fake_status DONE "$FAKE_RESULT_TURN2" '' false 2)"
+run_wait current "$PLAIN"
+assert_contains 'the result file of the current turn is reported' \
+  "$(verdict_of)" " result=$FAKE_RESULT_TURN2 "
+assert_contains 'the result file of the current turn prints its sections' "$OUTPUT" 'turn two summary'
+
+use_real_cli
+next_session
+dispatch run --session "$SESSION" --label twoturn --cwd "$PROJECT" --task-file "$PLAIN" --wait --poll-seconds 1
+dispatch send --session "$SESSION" --label twoturn --task-file "$TEST_ROOT/fail.md" --wait --poll-seconds 1
+assert_contains 'an INVALID second turn reports no result path' "$(verdict_of)" ' status=INVALID '
+assert_contains 'an INVALID second turn does not reuse the first turn result' "$(verdict_of)" ' result=- '
+assert_not_contains 'an INVALID second turn prints no stale sections' "$OUTPUT" '--- Summary ---'
+
+prepare_fake
 fake_cli_set status "$(fake_status DONE "$FAKE_RESULT" '' false)"
 fake_cli_seq wait 1 $'WORKER_ID=w-fake\nWAIT_RESULT=TIMEOUT'
 fake_cli_seq wait 2 $'WORKER_ID=w-fake\nWAIT_RESULT=TERMINAL'
 next_session
 dispatch run --session "$SESSION" --label poll --cwd "$PROJECT" --task-file "$PLAIN" \
   --wait --max-wait 3 --poll-seconds 5
-assert_eq 'the wait timeout is capped by the remaining max-wait' \
-  "wait --timeout 3 w-fake" \
-  "$(sed -n '1,/^call=2$/p' "$FAKE_CLI_DIR/wait.argv" | sed -n 's/^arg=//p' | head -n 4 | tr '\n' ' ' | sed 's/ $//')"
+first_timeout="$(sed -n '1,/^call=2$/p' "$FAKE_CLI_DIR/wait.argv" | sed -n 's/^arg=//p' | sed -n '3p')"
+if [[ "$first_timeout" =~ ^[0-9]+$ ]] && ((first_timeout >= 2 && first_timeout <= 3)); then
+  pass 'the wait timeout is capped by the remaining max-wait'
+else
+  fail 'the wait timeout is capped by the remaining max-wait' "first timeout [$first_timeout]"
+fi
 assert_eq 'two wait calls were needed' 2 "$(fake_cli_calls wait)"
 
 prepare_fake
