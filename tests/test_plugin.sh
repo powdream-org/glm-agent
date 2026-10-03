@@ -273,6 +273,42 @@ if [[ -f "$quota_skill" ]]; then
   done
 fi
 
+dispatch_skill="$REPO_DIR/skills/dispatch/SKILL.md"
+quota_rows="$REPO_DIR/tests/dispatch/quota-rows.tsv"
+assert_file 'dispatch skill exists' "$dispatch_skill"
+assert_file 'quota rows table exists' "$quota_rows"
+if [[ -f "$dispatch_skill" ]]; then
+  dispatch_frontmatter="$(sed -n '2,/^---$/p' "$dispatch_skill")"
+  dispatch_body="$(sed '1,/^---$/d' "$dispatch_skill")"
+  dispatch_allowed="$(printf '%s\n' "$dispatch_frontmatter" |
+    sed -n 's/^allowed-tools: //p')"
+  dispatch_description="$(printf '%s\n' "$dispatch_frontmatter" |
+    sed -n 's/^description: //p')"
+  assert_eq 'dispatch skill name' 'dispatch' \
+    "$(printf '%s\n' "$dispatch_frontmatter" | sed -n 's/^name: //p')"
+  if [[ -n "$dispatch_description" ]]; then
+    pass 'dispatch skill description is not empty'
+  else
+    fail 'dispatch skill description is not empty' 'description line is empty'
+  fi
+  assert_eq 'dispatch skill allows exactly the glm-dispatch command' \
+    "Bash(bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/glm-dispatch\" *)" "$dispatch_allowed"
+  assert_contains 'dispatch skill body runs the allowed command' \
+    "$dispatch_body" "bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/glm-dispatch\""
+  for keyword in GLM_BLOCKED GLM_NOT_REACHED GLM_RECEIPT GLM_VERDICT \
+    GLM_STALLED GLM_STILL_RUNNING GLM_WARN --wait --max-wait --stall-timeout \
+    --task-file --session "\${CLAUDE_SESSION_ID}" run_in_background \
+    'timeout: 7200000' CronCreate pending attach worker-protocol quota-exhausted; do
+    assert_contains "dispatch skill body mentions $keyword" "$dispatch_body" "$keyword"
+  done
+  if [[ -f "$quota_rows" ]]; then
+    while IFS=$'\t' read -r row keyword; do
+      assert_contains "dispatch skill decision table row $row mentions $keyword" \
+        "$dispatch_body" "$keyword"
+    done <"$quota_rows"
+  fi
+fi
+
 if command -v claude >/dev/null 2>&1 &&
    [[ -f "$plugin_json" && -f "$marketplace_json" &&
       -f "$explorer_agent" && -f "$general_agent" ]]; then
