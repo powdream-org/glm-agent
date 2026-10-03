@@ -165,8 +165,9 @@ dd_emit_verdict() {
     fallback=false
   fi
   delta="$(dd_format_delta "$(dd_registry_get "$DD_SESSION" "$label" quota_1w_used)" "$(dd_read_quota_1w_used)")"
+  dd_git_report "$label"
   printf 'GLM_VERDICT label=%s worker=%s status=%s class=%s result=%s files_changed=%s quota_1w_delta=%s fallback=%s\n' \
-    "$label" "$worker" "$status" "$class" "$(dd_encode_token "${result:--}")" na "$delta" "$fallback"
+    "$label" "$worker" "$status" "$class" "$(dd_encode_token "${result:--}")" "$DD_FILES_CHANGED" "$delta" "$fallback"
   dd_emit_result_sections "$result"
   [[ "$status" == DONE ]]
 }

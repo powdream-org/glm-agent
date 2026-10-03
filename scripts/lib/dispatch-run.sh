@@ -58,6 +58,7 @@ dd_cmd_run() {
     dd_fail "label already exists"
   fi
   dd_gate_quota || exit $?
+  dd_git_snapshot "$DD_CWD"
   dd_read_file_exact "$DD_TASK_FILE"
   out="$(dd_cli start --async --role "$DD_ROLE" --model "$DD_MODEL" --cwd "$DD_CWD" "$DD_FILE_CONTENT")" || rc=$?
   if ! dd_check_receipt "$rc" "$out" "$DD_ROLE" "$DD_MODEL" "$DD_CWD" 0; then
@@ -70,7 +71,9 @@ dd_cmd_run() {
     cwd "$DD_CWD" task_file "$(dd_absolute_path "$DD_TASK_FILE")" \
     started_at "$(dd_now_utc)" scope "$DD_QUOTA_SCOPE" \
     quota_5h_used "$DD_QUOTA_5H_USED" quota_1w_used "$DD_QUOTA_1W_USED" \
-    git_head none git_status_hash none turn "$turn" acked false
+    git_head "$DD_GIT_HEAD" git_status_hash "$DD_GIT_STATUS_HASH" \
+    turn "$turn" acked false
+  dd_save_git_snapshot
   dd_emit_receipt "$DD_LABEL" "$worker" "$turn" "$DD_ROLE" "$DD_MODEL" "$DD_CWD"
   if [[ "$DD_WAIT" == true ]]; then
     dd_judge "$DD_LABEL" "$worker" || exit $?

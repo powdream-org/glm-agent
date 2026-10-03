@@ -45,3 +45,18 @@ dd_registry_put() {
   done
   mv "$tmp" "$file"
 }
+
+dd_registry_put_text() {
+  local dir tmp
+  dir="$(dd_registry_dir "$1")"
+  tmp="$(mktemp "$dir/.$2.XXXXXX")"
+  chmod 600 "$tmp"
+  if [[ -n "$4" ]]; then
+    printf '%s\n' "$4" >"$tmp"
+  fi
+  mv "$tmp" "$dir/$2.$3"
+}
+
+dd_registry_remove_side_file() {
+  rm -f "$(dd_registry_dir "$1")/$2.$3"
+}
