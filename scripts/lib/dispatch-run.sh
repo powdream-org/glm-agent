@@ -72,4 +72,7 @@ dd_cmd_run() {
     quota_5h_used "$DD_QUOTA_5H_USED" quota_1w_used "$DD_QUOTA_1W_USED" \
     git_head none git_status_hash none turn "$turn" acked false
   dd_emit_receipt "$DD_LABEL" "$worker" "$turn" "$DD_ROLE" "$DD_MODEL" "$DD_CWD"
+  if [[ "$DD_WAIT" == true ]]; then
+    dd_judge "$DD_LABEL" "$worker" || exit $?
+  fi
 }

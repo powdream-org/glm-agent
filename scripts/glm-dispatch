@@ -22,6 +22,7 @@ DD_CLI="${GLM_DISPATCH_CLI:-$DD_ROOT_DIR/glm-agent}"
 source "$DD_SCRIPT_DIR/lib/dispatch-common.sh"
 source "$DD_SCRIPT_DIR/lib/dispatch-quota.sh"
 source "$DD_SCRIPT_DIR/lib/dispatch-registry.sh"
+source "$DD_SCRIPT_DIR/lib/dispatch-wait.sh"
 source "$DD_SCRIPT_DIR/lib/dispatch-run.sh"
 
 dd_main "$@"

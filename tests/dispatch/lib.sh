@@ -190,6 +190,10 @@ printf '%s\n' "$out"
 if [[ "${1:-}" == wait ]]; then
   printf '%s\n' "$out" | sed -n 's/^WAIT_RESULT=//p' >>"${SPY_LOG:?}"
 fi
+if [[ "${1:-}" == start && "${SPY_SETTLE_AFTER_START:-0}" == 1 ]]; then
+  worker="$(printf '%s\n' "$out" | sed -n 's/^WORKER_ID=//p')"
+  "$SPY_REAL_CLI" wait --timeout 20 "$worker" >/dev/null
+fi
 exit "$rc"
 FAKE
 chmod +x "$FAKE_BIN/spy-cli"
@@ -426,9 +430,20 @@ dispatch_in() {
 }
 
 receipt_worker() {
-  sed -n 's/.* worker=\([^ ]*\) .*/\1/p' <<<"$1"
+  sed -n 's/^GLM_RECEIPT .* worker=\([^ ]*\) .*/\1/p' <<<"$1"
 }
 
 count_entries() {
   find "$1" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' '
+}
+
+wait_for_text() {
+  local i
+  for ((i = 0; i < 1000; i++)); do
+    if grep -q "$2" "$1" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.02
+  done
+  return 1
 }
