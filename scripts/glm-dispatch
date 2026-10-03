@@ -25,5 +25,6 @@ source "$DD_SCRIPT_DIR/lib/dispatch-registry.sh"
 source "$DD_SCRIPT_DIR/lib/dispatch-git.sh"
 source "$DD_SCRIPT_DIR/lib/dispatch-wait.sh"
 source "$DD_SCRIPT_DIR/lib/dispatch-run.sh"
+source "$DD_SCRIPT_DIR/lib/dispatch-cmds.sh"
 
 dd_main "$@"
