@@ -207,6 +207,8 @@ values stored when the worker was created.
 
 From the main session, `glm-dispatch` (skill `glm-agent:dispatch`)
 is the recommended path to a GLM worker. The bridge agents are not recommended.
+The bridge agents can read the brief and answer it themselves without calling
+GLM, so a bridge report alone does not prove that a GLM worker ran.
 
 Prefer native Claude for connector/MCP work, design or safety rulings, and
 changes to this provider wrapper itself. The GLM bridge does not inherit the
