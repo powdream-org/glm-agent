@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROGRAM="${0##*/}"
-VERSION="0.9.0"
+VERSION="1.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
@@ -20,7 +20,7 @@ WORKERS_DIR="$GLM_AGENT_HOME/workers"
 
 ZAI_BASE_URL="${ZAI_BASE_URL:-https://api.z.ai/api/anthropic}"
 ZAI_HAIKU_MODEL="${ZAI_HAIKU_MODEL:-glm-5.3-flash[1m]}"
-ZAI_SONNET_MODEL="${ZAI_SONNET_MODEL:-glm-5.3[1m]}"
+ZAI_SONNET_MODEL="${ZAI_SONNET_MODEL:-glm-5.3-flash[1m]}"
 ZAI_OPUS_MODEL="${ZAI_OPUS_MODEL:-glm-5.3[1m]}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
 
