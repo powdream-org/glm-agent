@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROGRAM="${0##*/}"
-VERSION="1.0.0"
+VERSION="1.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
@@ -17,6 +17,8 @@ fi
 AUTH_FILE="$GLM_AGENT_HOME/.env.auth"
 TEAM_SCOPE_FILE="$GLM_AGENT_HOME/.env.team-scope"
 WORKERS_DIR="$GLM_AGENT_HOME/workers"
+CLEANUP_STAMP_FILE="$GLM_AGENT_HOME/.cleanup-stamp"
+CLEANUP_LOG_FILE="$GLM_AGENT_HOME/cleanup.log"
 
 ZAI_BASE_URL="${ZAI_BASE_URL:-https://api.z.ai/api/anthropic}"
 ZAI_HAIKU_MODEL="${ZAI_HAIKU_MODEL:-glm-5.3-flash[1m]}"
@@ -87,11 +89,14 @@ COMMANDS
         TURN=1
         MODEL=opus|sonnet|haiku
         ROLE=explorer|general-purpose
-        STATUS=DONE|BLOCKED|INVALID
+        STATUS=DONE|BLOCKED|NO_REPORT|INVALID
         RESULT=<absolute-path>
         ERROR_KIND=<classification-or-empty>
         PROVIDER_CODE=<Z.ai-code-or-empty>
         FALLBACK_RECOMMENDED=true|false
+
+      With STATUS=NO_REPORT, the output also carries REASON, REPLY, and NEXT
+      before FALLBACK_RECOMMENDED.
 
   start --async [--role <role>] [--model <alias>] [--cwd <directory>] <task>
       Create the same persistent worker, detach its first headless turn, and
@@ -185,8 +190,11 @@ WORKER FILES
 STATUS VALUES
   DONE      The worker produced a valid result ending in STATUS: DONE.
   BLOCKED   The worker produced a valid result ending in STATUS: BLOCKED.
-  INVALID   Claude failed, returned malformed data, or violated the result
-            protocol. Raw response and stderr files remain available.
+  NO_REPORT The turn ended without a valid result file. The work may be done.
+            This is not an error: do not close the worker or resend the task.
+            Read REPLY, check the changed files, and judge.
+  INVALID   Claude failed or returned malformed data. Raw response and stderr
+            files remain available.
   RUNNING   A turn is currently executing or was interrupted externally.
   NEW       A worker exists but no turn has begun.
 
@@ -194,8 +202,8 @@ WORKER CONTRACT
   Every turn receives an absolute GLM_RESULT_FILE path. The worker must do and
   verify the requested work, write the full report to that file, read it back,
   and make its final line exactly STATUS: DONE or STATUS: BLOCKED. Starting a
-  background process alone is not completion. The wrapper classifies missing
-  or malformed results and invocation failures as INVALID.
+  background process alone is not completion. The wrapper classifies a missing
+  or malformed result as NO_REPORT and an invocation failure as INVALID.
 
   RUNNING is a launch receipt, not task completion.
   Stopping a parent Claude turn leaves a detached worker running.
@@ -204,7 +212,7 @@ WORKER CONTRACT
 ORCHESTRATOR WORKFLOW
   1. glm-agent start --async "<task>"
   2. Record WORKER_ID, then use wait or status until terminal.
-  3. Read RESULT and inspect the actual changes.
+  3. Read RESULT, or REPLY when STATUS=NO_REPORT, and inspect the actual changes.
   4. glm-agent send --async <worker-id> "<review feedback>" when needed.
   5. Use cancel to stop active work, or close after all turns are finished.
 
@@ -221,6 +229,11 @@ ENVIRONMENT
       Directory containing explorer.md and general-purpose.md, read directly
       on every turn. Default: prompts/ next to the executable.
 
+  GLM_WORKER_RETENTION_DAYS
+      Days a finished worker is kept after its last activity. start deletes
+      older DONE, BLOCKED, NO_REPORT, and INVALID workers at most once per 24
+      hours. Default: 21. 0 turns the cleanup off.
+
 SECURITY
   ~/.glm is mode 0700 and ~/.glm/.env.auth is mode 0600. The API key is never
   printed by glm-agent. Worker status output omits the Claude session ID.
@@ -235,9 +248,9 @@ SECURITY
   holds the raw response body and curl stderr, never the key.
 
 EXIT STATUS
-  0  Command succeeded; DONE and BLOCKED are both successful worker turns.
-     quota exits 0 for QUOTA_STATUS=OK, even when a window is exhausted.
-  1  Claude invocation or worker result protocol failed (STATUS=INVALID).
+  0  Command succeeded; DONE, BLOCKED, and NO_REPORT are successful worker
+     turns. quota exits 0 for QUOTA_STATUS=OK, even when a window is exhausted.
+  1  Claude invocation or worker response failed (STATUS=INVALID).
      quota exits 1 when the lookup failed (QUOTA_STATUS=INVALID).
   2  Invalid CLI usage, configuration, dependency, or worker state.
 EOF
@@ -936,6 +949,22 @@ require_worker() {
   [[ -f "$dir/meta" ]] || die "worker not found: $worker_id"
 }
 
+print_no_report_fields() {
+  local status="$1"
+  local meta="$2"
+  local reply
+
+  [[ "$status" == "NO_REPORT" ]] || return 0
+  reply="$(snapshot_get "$meta" reply)"
+  printf 'REASON=%s\n' "$(snapshot_get "$meta" reason)"
+  printf 'REPLY=%s\n' "$reply"
+  if [[ -n "$reply" ]]; then
+    printf '%s\n' 'NEXT=read-reply'
+  else
+    printf '%s\n' 'NEXT=inspect-changes'
+  fi
+}
+
 print_turn_control() {
   local dir="$1"
   local turn="$2"
@@ -954,6 +983,7 @@ print_turn_control() {
   printf 'RESULT=%s\n' "$result_file"
   printf 'ERROR_KIND=%s\n' "$error_kind"
   printf 'PROVIDER_CODE=%s\n' "$provider_code"
+  print_no_report_fields "$status" "$meta"
   if [[ "$error_kind" == "quota-exhausted" ]]; then
     printf '%s\n' 'FALLBACK_RECOMMENDED=true'
   else
@@ -1047,6 +1077,41 @@ invalidate_turn() {
   return 1
 }
 
+write_reply_file() {
+  local response_file="$1"
+  local reply_file="$2"
+  local text
+
+  text="$(
+    jq -r '
+      select(
+        type == "object" and .is_error == false
+        and (.result | type) == "string"
+        and (.result | test("\\S"))
+      ) | .result
+    ' "$response_file" 2>/dev/null
+  )" || return 1
+  [[ -n "$text" ]] || return 1
+  printf '%s\n' "$text" >"$reply_file"
+  chmod 600 "$reply_file"
+}
+
+finish_no_report_turn() {
+  local dir="$1"
+  local turn="$2"
+  local result_file="$3"
+  local response_file="$4"
+  local reason="$5"
+  local generation="$6"
+  local reply_file="${result_file%/*}/reply.md"
+
+  write_reply_file "$response_file" "$reply_file" || reply_file=""
+  meta_update "$dir" status "NO_REPORT" error_kind "" provider_code "" \
+    reason "$reason" reply "$reply_file"
+  release_worker_lock "$dir" "$generation"
+  print_turn_control "$dir" "$turn" "NO_REPORT" "$result_file" "" ""
+}
+
 validate_worker_execution() {
   local worker_id="$1"
   local dir
@@ -1130,7 +1195,7 @@ prepare_turn() {
 
   active_set "$dir" "$generation" turn "$turn"
   meta_update "$dir" turn "$turn" status "RUNNING" error_kind "" \
-    provider_code ""
+    provider_code "" reason "" reply ""
   printf '%s\n' "$turn"
 }
 
@@ -1320,9 +1385,9 @@ execute_headless_turn() {
 
   if [[ ! -s "$result_file" ]]; then
     drain_owned_provider_group "$provider_pgid" "$provider_start" || true
-    invalidate_turn "$dir" "$turn" "$result_file" "result-file-missing" \
-      "worker-protocol" "" "$generation"
-    return 1
+    finish_no_report_turn "$dir" "$turn" "$result_file" "$response_file" \
+      "result-file-missing" "$generation"
+    return 0
   fi
   chmod 600 "$result_file"
 
@@ -1335,9 +1400,9 @@ execute_headless_turn() {
       ;;
     *)
       drain_owned_provider_group "$provider_pgid" "$provider_start" || true
-      invalidate_turn "$dir" "$turn" "$result_file" "result-status-invalid" \
-        "worker-protocol" "" "$generation"
-      return 1
+      finish_no_report_turn "$dir" "$turn" "$result_file" "$response_file" \
+        "result-status-invalid" "$generation"
+      return 0
       ;;
   esac
 
@@ -1672,6 +1737,62 @@ cmd_run() {
   )
 }
 
+cleanup_log() {
+  {
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$CLEANUP_LOG_FILE"
+    chmod 600 "$CLEANUP_LOG_FILE"
+  } 2>/dev/null || true
+}
+
+cleanup_worker() {
+  local dir="$1"
+  local name
+  local status
+  local mtime
+  local idle_days
+  local generation
+
+  name="${dir##*/}"
+  [[ "$name" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$ ]] || return 0
+  [[ -f "$dir/meta" ]] || return 0
+  status="$(meta_get "$dir" status)"
+  case "$status" in
+    DONE|BLOCKED|NO_REPORT|INVALID) ;;
+    *) return 0 ;;
+  esac
+  mtime="$(stat -f '%m' "$dir/meta" 2>/dev/null || stat -c '%Y' "$dir/meta" 2>/dev/null || true)"
+  [[ "$mtime" =~ ^[0-9]+$ ]] || mtime="$(date +%s)"
+  idle_days="$((($(date +%s) - mtime) / 86400))"
+  generation="$(new_active_generation)"
+  acquire_worker_lock "$dir" "cleanup" "$generation"
+  rm -rf -- "$dir"
+  cleanup_log "deleted worker=$name status=$status idle_days=$idle_days"
+}
+
+cleanup_old_workers() {
+  local days="${GLM_WORKER_RETENTION_DAYS:-21}"
+  local minutes
+  local meta_path
+
+  if [[ "$days" =~ ^[0-9]+$ ]] && ((10#$days == 0)); then
+    return 0
+  fi
+  [[ -d "$WORKERS_DIR" ]] || return 0
+  if [[ -n "$(find "$CLEANUP_STAMP_FILE" -mmin -1440 2>/dev/null)" ]]; then
+    return 0
+  fi
+  touch "$CLEANUP_STAMP_FILE"
+  chmod 600 "$CLEANUP_STAMP_FILE"
+  if [[ ! "$days" =~ ^[0-9]+$ ]]; then
+    cleanup_log "warn invalid GLM_WORKER_RETENTION_DAYS=$days"
+    return 0
+  fi
+  minutes="$((10#$days * 1440))"
+  while IFS= read -r meta_path; do
+    (cleanup_worker "${meta_path%/meta}") 2>/dev/null || true
+  done < <(find "$WORKERS_DIR" -mindepth 2 -maxdepth 2 -name meta -mmin "+$minutes" 2>/dev/null)
+}
+
 cmd_start() {
   local model="$CLAUDE_MODEL"
   local role="$DEFAULT_ROLE"
@@ -1726,6 +1847,7 @@ cmd_start() {
   require_execution_dependencies
   load_api_key
   require_system_prompt_file
+  (cleanup_old_workers) >/dev/null 2>&1 || true
   local worker_id
   worker_id="$(create_worker "$model" "$role" "$cwd" "$task" "")"
 
@@ -1879,7 +2001,7 @@ cmd_wait() {
         observed_turn="$(snapshot_get "$meta" turn)"
       fi
       case "$status" in
-        DONE|BLOCKED|INVALID)
+        DONE|BLOCKED|NO_REPORT|INVALID)
           print_observed_turn "$dir" "$status" "$meta" "$observed_turn"
           printf '%s\n' 'WAIT_RESULT=TERMINAL'
           return 0
@@ -1921,7 +2043,7 @@ cmd_cancel() {
   if [[ "$WORKER_HAS_ACTIVE" != "true" ]]; then
     status="$(snapshot_get "$WORKER_META_SNAPSHOT" status)"
     case "$status" in
-      DONE|BLOCKED|INVALID)
+      DONE|BLOCKED|NO_REPORT|INVALID)
         print_observed_turn "$dir" "$status" "$WORKER_META_SNAPSHOT"
         printf '%s\n' 'CANCEL_RESULT=ALREADY_TERMINAL'
         return 0
@@ -2087,6 +2209,7 @@ cmd_status() {
   printf 'RESULT=%s\n' "$(snapshot_get "$meta" latest_result)"
   printf 'ERROR_KIND=%s\n' "$error_kind"
   printf 'PROVIDER_CODE=%s\n' "$provider_code"
+  print_no_report_fields "$status" "$meta"
   if [[ "$error_kind" == "quota-exhausted" ]]; then
     printf '%s\n' 'FALLBACK_RECOMMENDED=true'
   else

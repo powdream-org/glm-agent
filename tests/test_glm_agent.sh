@@ -269,6 +269,16 @@ if [[ "$prompt" == *WRONG_SESSION* ]]; then
   session_id="different-session"
 fi
 
+if [[ "$prompt" == *EMPTY_REPLY* ]]; then
+  printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":""}\n' "$session_id"
+  exit 0
+fi
+
+if [[ "$prompt" == *MULTILINE_REPLY* ]]; then
+  printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"first reply line\\nsecond reply line"}\n' "$session_id"
+  exit 0
+fi
+
 printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"ok"}\n' "$session_id"
 FAKE
 chmod +x "$FAKE_BIN/claude"
@@ -387,7 +397,17 @@ process_is_running_test() {
 
 help_output="$($SCRIPT --help)"
 assert_contains 'help documents result command' "$help_output" 'glm-agent result <worker-id>'
-assert_contains 'help documents durable result status' "$help_output" 'STATUS=DONE|BLOCKED|INVALID'
+assert_contains 'help documents durable result status' "$help_output" 'STATUS=DONE|BLOCKED|NO_REPORT|INVALID'
+assert_contains 'help documents NO_REPORT' "$help_output" \
+  'NO_REPORT The turn ended without a valid result file. The work may be done.'
+assert_contains 'help says NO_REPORT is not an error' "$help_output" \
+  'This is not an error: do not close the worker or resend the task.'
+assert_contains 'help documents the NO_REPORT output keys' "$help_output" \
+  'REASON, REPLY, and NEXT'
+assert_contains 'help documents the retention variable' "$help_output" \
+  'GLM_WORKER_RETENTION_DAYS'
+assert_contains 'help documents the retention default' "$help_output" \
+  'Default: 21. 0 turns the cleanup off.'
 assert_contains 'help explains close preserves history' "$help_output" 'does not delete its history'
 assert_contains 'help documents role option' "$help_output" \
   'start [--role <role>] [--model <alias>]'
@@ -1604,26 +1624,33 @@ assert_contains 'parallel general worker keeps role' \
 
 : >"$FAKE_LOG"
 capture "$SCRIPT" send "$worker_id" 'MISSING_RESULT'
-assert_eq 'missing result is a protocol failure' '1' "$RC"
-assert_contains 'missing result reports INVALID' "$OUTPUT" 'STATUS=INVALID'
-assert_contains 'missing result explains failure' "$OUTPUT" 'ERROR=result-file-missing'
-assert_contains 'protocol errors are classified' "$OUTPUT" \
-  'ERROR_KIND=worker-protocol'
-assert_contains 'protocol errors do not fallback' "$OUTPUT" \
+assert_eq 'missing result is not a command failure' '0' "$RC"
+assert_contains 'missing result reports NO_REPORT' "$OUTPUT" 'STATUS=NO_REPORT'
+assert_contains 'missing result names the reason' "$OUTPUT" 'REASON=result-file-missing'
+assert_not_contains 'missing result prints no ERROR line' "$OUTPUT" $'\nERROR='
+assert_contains 'missing result has an empty error kind' "$OUTPUT" $'ERROR_KIND=\n'
+assert_contains 'missing result does not fallback' "$OUTPUT" \
   'FALLBACK_RECOMMENDED=false'
 missing_result_turn="$(meta_get_test "$meta" turn)"
 if [[ "$missing_result_turn" =~ ^[0-9]+$ ]]; then
-  pass 'invalid turn is retained in history'
+  pass 'NO_REPORT turn is retained in history'
 else
-  fail 'invalid turn is retained in history' "invalid turn: $missing_result_turn"
+  fail 'NO_REPORT turn is retained in history' "invalid turn: $missing_result_turn"
 fi
-assert_eq 'invalid turn updates worker status' 'INVALID' "$(meta_get_test "$meta" status)"
-assert_eq 'invalid turn keeps prior canonical result' "$send_result" "$($SCRIPT result "$worker_id")"
+printf -v missing_result_label '%04d' "$((10#$missing_result_turn))"
+missing_reply="$GLM_AGENT_HOME/workers/$worker_id/turns/$missing_result_label/reply.md"
+assert_contains 'missing result reports the reply path' "$OUTPUT" "REPLY=$missing_reply"
+assert_contains 'missing result points to the reply' "$OUTPUT" 'NEXT=read-reply'
+assert_eq 'reply file holds the worker reply' 'ok' "$(cat "$missing_reply")"
+assert_eq 'reply file is private' '600' "$(file_mode "$missing_reply")"
+assert_eq 'NO_REPORT turn updates worker status' 'NO_REPORT' "$(meta_get_test "$meta" status)"
+assert_eq 'NO_REPORT turn stores the reason' 'result-file-missing' "$(meta_get_test "$meta" reason)"
+assert_eq 'NO_REPORT turn keeps prior canonical result' "$send_result" "$($SCRIPT result "$worker_id")"
 
 capture "$SCRIPT" send "$worker_id" 'MALFORMED_RESULT'
-assert_eq 'malformed result status is a protocol failure' '1' "$RC"
-assert_contains 'malformed result reports INVALID' "$OUTPUT" 'STATUS=INVALID'
-assert_contains 'malformed result identifies status error' "$OUTPUT" 'ERROR=result-status-invalid'
+assert_eq 'malformed result is not a command failure' '0' "$RC"
+assert_contains 'malformed result reports NO_REPORT' "$OUTPUT" 'STATUS=NO_REPORT'
+assert_contains 'malformed result names the reason' "$OUTPUT" 'REASON=result-status-invalid'
 malformed_result_turn="$(meta_get_test "$meta" turn)"
 assert_eq 'malformed result turn follows missing result' \
   "$((10#$missing_result_turn + 1))" "$malformed_result_turn"
@@ -1652,6 +1679,58 @@ assert_eq 'unexpected resumed session is an invocation failure' '1' "$RC"
 assert_contains 'unexpected resumed session reports INVALID' "$OUTPUT" 'STATUS=INVALID'
 assert_contains 'unexpected resumed session identifies mismatch' "$OUTPUT" 'ERROR=unexpected-session-id'
 assert_eq 'unexpected session does not replace stored session' 'session-1' "$(meta_get_test "$meta" claude_session_id)"
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'MISSING_RESULT EMPTY_REPLY'
+assert_eq 'empty reply is not a command failure' '0' "$RC"
+assert_contains 'empty reply reports NO_REPORT' "$OUTPUT" 'STATUS=NO_REPORT'
+assert_contains 'empty reply leaves the reply path empty' "$OUTPUT" $'REPLY=\n'
+assert_contains 'empty reply asks for a change inspection' "$OUTPUT" 'NEXT=inspect-changes'
+empty_reply_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+if [[ ! -e "$GLM_AGENT_HOME/workers/$empty_reply_id/turns/0001/reply.md" ]]; then
+  pass 'empty reply writes no reply file'
+else
+  fail 'empty reply writes no reply file' 'reply.md exists'
+fi
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'MISSING_RESULT MULTILINE_REPLY'
+multiline_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+assert_eq 'a multi-line reply is stored whole' $'first reply line\nsecond reply line' \
+  "$(cat "$GLM_AGENT_HOME/workers/$multiline_id/turns/0001/reply.md")"
+assert_not_contains 'stdout carries the reply path and not the reply' "$OUTPUT" 'first reply line'
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'MISSING_RESULT observe'
+no_report_id="$(printf '%s\n' "$OUTPUT" | sed -n 's/^WORKER_ID=//p')"
+no_report_meta="$GLM_AGENT_HOME/workers/$no_report_id/meta"
+no_report_reply="$GLM_AGENT_HOME/workers/$no_report_id/turns/0001/reply.md"
+
+capture "$SCRIPT" status "$no_report_id"
+assert_eq 'status of a NO_REPORT worker succeeds' '0' "$RC"
+assert_contains 'status reports NO_REPORT' "$OUTPUT" 'STATUS=NO_REPORT'
+assert_contains 'status reports the reason' "$OUTPUT" 'REASON=result-file-missing'
+assert_contains 'status reports the reply path' "$OUTPUT" "REPLY=$no_report_reply"
+assert_contains 'status points to the reply' "$OUTPUT" 'NEXT=read-reply'
+
+capture "$SCRIPT" wait --timeout 0 "$no_report_id"
+assert_eq 'wait on a NO_REPORT worker succeeds' '0' "$RC"
+assert_contains 'wait treats NO_REPORT as terminal' "$OUTPUT" 'WAIT_RESULT=TERMINAL'
+assert_contains 'wait reports NO_REPORT' "$OUTPUT" 'STATUS=NO_REPORT'
+assert_contains 'wait reports the reason' "$OUTPUT" 'REASON=result-file-missing'
+
+capture "$SCRIPT" cancel "$no_report_id"
+assert_eq 'cancel on a NO_REPORT worker succeeds' '0' "$RC"
+assert_contains 'cancel reports a NO_REPORT worker as already terminal' "$OUTPUT" \
+  'CANCEL_RESULT=ALREADY_TERMINAL'
+
+capture "$SCRIPT" list
+assert_contains 'list shows the NO_REPORT worker' "$OUTPUT" \
+  "WORKER_ID=$no_report_id"$'\tSTATUS=NO_REPORT'
+
+capture "$SCRIPT" send "$no_report_id" 'follow up after no report'
+assert_eq 'send to a NO_REPORT worker succeeds' '0' "$RC"
+assert_contains 'send after NO_REPORT reaches DONE' "$OUTPUT" 'STATUS=DONE'
+assert_not_contains 'a DONE turn prints no REASON line' "$OUTPUT" 'REASON='
+assert_eq 'a later turn clears the reason' '' "$(meta_get_test "$no_report_meta" reason)"
+assert_eq 'a later turn clears the reply' '' "$(meta_get_test "$no_report_meta" reply)"
 
 capture "$SCRIPT" start --cwd "$PROJECT" 'close race fixture worker'
 assert_eq 'close race fixture starts' '0' "$RC"
@@ -2517,6 +2596,147 @@ actual_quota_example="$(printf '%s\n' "$expected_quota_ok" |
   sed '/^RESPONSE=/d')"
 assert_eq 'README quota example matches the CLI output' \
   "$actual_quota_example" "$readme_quota_example"
+
+touch_days_ago() {
+  local path="$1" days="$2" epoch stamp
+  epoch="$(( $(date +%s) - days * 86400 ))"
+  stamp="$(date -r "$epoch" +%Y%m%d%H%M 2>/dev/null)" ||
+    stamp="$(date -d "@$epoch" +%Y%m%d%H%M)"
+  touch -t "$stamp" "$path"
+}
+
+make_cleanup_worker() {
+  local name="$1" status="$2" days="$3" closed="${4:-false}"
+  local dir="$GLM_AGENT_HOME/workers/$name"
+  mkdir -p "$dir/turns/0001"
+  printf 'worker_id=%s\nmodel=sonnet\nrole=general-purpose\ncwd=%s\nclosed=%s\nturn=1\nstatus=%s\nlatest_result=\nerror_kind=\nprovider_code=\n' \
+    "$name" "$PROJECT" "$closed" "$status" >"$dir/meta"
+  touch_days_ago "$dir/meta" "$days"
+}
+
+assert_deleted() {
+  if [[ -e "$GLM_AGENT_HOME/workers/$2" ]]; then
+    fail "$1" "still present: $2"
+  else
+    pass "$1"
+  fi
+}
+
+assert_kept() {
+  if [[ -e "$GLM_AGENT_HOME/workers/$2" ]]; then
+    pass "$1"
+  else
+    fail "$1" "deleted: $2"
+  fi
+}
+
+cleanup_stamp="$GLM_AGENT_HOME/.cleanup-stamp"
+cleanup_log_file="$GLM_AGENT_HOME/cleanup.log"
+rm -f "$cleanup_log_file" "$cleanup_stamp"
+
+make_cleanup_worker 20250101T000001Z-111-1 DONE 22
+make_cleanup_worker 20250101T000002Z-111-2 DONE 20
+make_cleanup_worker 20250101T000003Z-111-3 INVALID 22 true
+make_cleanup_worker 20250101T000004Z-111-4 NO_REPORT 22
+make_cleanup_worker 20250101T000005Z-111-5 BLOCKED 22
+make_cleanup_worker 20250101T000006Z-111-6 RUNNING 22
+make_cleanup_worker 20250101T000007Z-111-7 NEW 22
+mkdir -p "$GLM_AGENT_HOME/workers/20250101T000008Z-111-8/turns"
+touch_days_ago "$GLM_AGENT_HOME/workers/20250101T000008Z-111-8" 22
+mkdir -p "$GLM_AGENT_HOME/workers/not-a-worker-id/turns"
+printf 'status=DONE\n' >"$GLM_AGENT_HOME/workers/not-a-worker-id/meta"
+touch_days_ago "$GLM_AGENT_HOME/workers/not-a-worker-id/meta" 22
+make_cleanup_worker 20250101T000009Z-111-9 DONE 22
+mkdir "$GLM_AGENT_HOME/workers/20250101T000009Z-111-9/active"
+cleanup_outside="$TEST_ROOT/outside-worker"
+mkdir -p "$cleanup_outside/turns"
+printf 'status=DONE\n' >"$cleanup_outside/meta"
+touch_days_ago "$cleanup_outside/meta" 22
+ln -s "$cleanup_outside" "$GLM_AGENT_HOME/workers/20250101T000020Z-111-20"
+
+capture "$SCRIPT" start --cwd "$PROJECT" 'cleanup trigger'
+assert_eq 'a start that cleans up succeeds' '0' "$RC"
+assert_eq 'a start that cleans up adds nothing to stderr' '' "$STDERR"
+assert_deleted 'cleanup deletes a DONE worker idle for 22 days' 20250101T000001Z-111-1
+assert_kept 'cleanup keeps a DONE worker idle for 20 days' 20250101T000002Z-111-2
+assert_deleted 'cleanup deletes a closed INVALID worker idle for 22 days' 20250101T000003Z-111-3
+assert_deleted 'cleanup deletes a NO_REPORT worker idle for 22 days' 20250101T000004Z-111-4
+assert_deleted 'cleanup deletes a BLOCKED worker idle for 22 days' 20250101T000005Z-111-5
+assert_kept 'cleanup keeps a RUNNING worker' 20250101T000006Z-111-6
+assert_kept 'cleanup keeps a NEW worker' 20250101T000007Z-111-7
+assert_kept 'cleanup keeps a directory without meta' 20250101T000008Z-111-8
+assert_kept 'cleanup keeps a directory whose name is not a worker id' not-a-worker-id
+assert_kept 'cleanup keeps a locked worker' 20250101T000009Z-111-9
+assert_file 'cleanup does not follow a symlinked worker directory' "$cleanup_outside/meta"
+assert_file 'cleanup writes the stamp file' "$cleanup_stamp"
+cleanup_log_text="$(cat "$cleanup_log_file")"
+assert_contains 'cleanup logs a deleted worker' "$cleanup_log_text" \
+  'deleted worker=20250101T000001Z-111-1 status=DONE idle_days=22'
+assert_not_contains 'cleanup does not log a kept worker' "$cleanup_log_text" \
+  'worker=20250101T000002Z-111-2'
+assert_eq 'cleanup log is private' '600' "$(file_mode "$cleanup_log_file")"
+rm -f "$GLM_AGENT_HOME/workers/20250101T000020Z-111-20"
+
+make_cleanup_worker 20250101T000010Z-111-10 DONE 22
+capture "$SCRIPT" start --cwd "$PROJECT" 'inside the 24 hour window'
+assert_kept 'a start within 24 hours does not clean up' 20250101T000010Z-111-10
+touch_days_ago "$cleanup_stamp" 2
+capture "$SCRIPT" start --cwd "$PROJECT" 'after the 24 hour window'
+assert_deleted 'a start after 24 hours cleans up' 20250101T000010Z-111-10
+
+make_cleanup_worker 20250101T000011Z-111-11 DONE 22
+rm -f "$cleanup_stamp"
+capture env GLM_WORKER_RETENTION_DAYS=0 "$SCRIPT" start --cwd "$PROJECT" 'cleanup off'
+assert_kept 'a retention of 0 days turns the cleanup off' 20250101T000011Z-111-11
+if [[ ! -e "$cleanup_stamp" ]]; then
+  pass 'a retention of 0 days leaves no stamp'
+else
+  fail 'a retention of 0 days leaves no stamp' "$cleanup_stamp exists"
+fi
+
+capture env GLM_WORKER_RETENTION_DAYS=abc "$SCRIPT" start --cwd "$PROJECT" 'cleanup invalid days'
+assert_eq 'an invalid retention does not fail the start' '0' "$RC"
+assert_kept 'an invalid retention deletes nothing' 20250101T000011Z-111-11
+assert_contains 'an invalid retention logs a warning' "$(cat "$cleanup_log_file")" \
+  'warn invalid GLM_WORKER_RETENTION_DAYS=abc'
+assert_file 'an invalid retention still writes the stamp' "$cleanup_stamp"
+
+rm -f "$cleanup_stamp"
+capture env GLM_WORKER_RETENTION_DAYS=30 "$SCRIPT" start --cwd "$PROJECT" 'retention 30'
+assert_kept 'a retention of 30 days keeps a worker idle for 22 days' 20250101T000011Z-111-11
+rm -f "$cleanup_stamp"
+capture env GLM_WORKER_RETENTION_DAYS=007 "$SCRIPT" start --cwd "$PROJECT" 'retention 007'
+assert_deleted 'a retention written as 007 means 7 days' 20250101T000011Z-111-11
+
+make_cleanup_worker 20250101T000012Z-111-12 DONE 22
+rm -f "$cleanup_stamp"
+capture "$SCRIPT" start --cwd "$PROJECT" 'keys with cleanup'
+keys_with_cleanup="$(printf '%s\n' "$OUTPUT" | sed 's/=.*//')"
+capture env GLM_WORKER_RETENTION_DAYS=0 "$SCRIPT" start --cwd "$PROJECT" 'keys without cleanup'
+keys_without_cleanup="$(printf '%s\n' "$OUTPUT" | sed 's/=.*//')"
+assert_eq 'cleanup adds no output line to start' "$keys_without_cleanup" "$keys_with_cleanup"
+
+make_cleanup_worker 20250101T000013Z-111-13 DONE 22
+rm -f "$cleanup_stamp" "$cleanup_log_file"
+mkdir "$cleanup_log_file"
+capture "$SCRIPT" start --cwd "$PROJECT" 'unwritable cleanup log'
+assert_eq 'a start succeeds when the cleanup log cannot be written' '0' "$RC"
+assert_eq 'an unwritable cleanup log adds nothing to stderr' '' "$STDERR"
+assert_deleted 'cleanup still deletes when the log cannot be written' 20250101T000013Z-111-13
+rmdir "$cleanup_log_file"
+
+make_cleanup_worker 20250101T000014Z-111-14 DONE 22
+rm -f "$cleanup_stamp"
+"$SCRIPT" start --cwd "$PROJECT" 'parallel cleanup one' >"$TEST_ROOT/cleanup-parallel-one.out" 2>&1 &
+cleanup_pid_one=$!
+"$SCRIPT" start --cwd "$PROJECT" 'parallel cleanup two' >"$TEST_ROOT/cleanup-parallel-two.out" 2>&1 &
+cleanup_pid_two=$!
+if wait "$cleanup_pid_one" && wait "$cleanup_pid_two"; then
+  pass 'two parallel starts both succeed while cleaning up'
+else
+  fail 'two parallel starts both succeed while cleaning up' 'a start failed'
+fi
+assert_deleted 'parallel starts still delete the old worker' 20250101T000014Z-111-14
 
 printf '1..%d\n' "$tests"
 if ((failures > 0)); then

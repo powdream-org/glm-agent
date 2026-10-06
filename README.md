@@ -109,10 +109,13 @@ FALLBACK_RECOMMENDED=false
 | `TURN` | The turn number |
 | `MODEL` | `opus`, `sonnet`, or `haiku` |
 | `ROLE` | `explorer` or `general-purpose` |
-| `STATUS` | `DONE`, `BLOCKED`, or `INVALID` |
+| `STATUS` | `DONE`, `BLOCKED`, `NO_REPORT`, or `INVALID` |
 | `RESULT` | The absolute path of the result file |
 | `ERROR_KIND` | The failure classification, or empty |
 | `PROVIDER_CODE` | The Z.ai error code, or empty |
+| `REASON` | With `NO_REPORT` only: `result-file-missing` or `result-status-invalid` |
+| `REPLY` | With `NO_REPORT` only: the absolute path of the worker's last reply, or empty |
+| `NEXT` | With `NO_REPORT` only: `read-reply` when `REPLY` is set, otherwise `inspect-changes` |
 | `FALLBACK_RECOMMENDED` | `true` or `false` |
 
 `start` takes these options:
@@ -149,7 +152,8 @@ A worker reports through a result file, and the wrapper turns that file into a
 | --- | --- |
 | `DONE` | The worker produced a valid result that ends in `STATUS: DONE` |
 | `BLOCKED` | The worker produced a valid result that ends in `STATUS: BLOCKED` |
-| `INVALID` | Claude failed, returned malformed data, or violated the result protocol |
+| `NO_REPORT` | The turn ended without a valid result file. This is not an error. The work may be done, so read `REPLY` and check the changed files. Do not close the worker or resend the task |
+| `INVALID` | Claude failed or returned malformed data |
 | `RUNNING` | A turn is executing, or an external event interrupted it |
 | `NEW` | The worker exists and no turn has begun |
 
@@ -169,8 +173,9 @@ of `system-prompt.md`. The worker follows these steps:
 - The system prompt asks for a report with the sections `# Summary`,
   `# Changes`, `# Verification`, and `# Remaining Issues`.
 - Starting a background process is not completion.
-- The wrapper classifies a failed Claude invocation, an invalid response, a
-  missing result, and a malformed final status as `INVALID`.
+- The wrapper classifies a failed Claude invocation and an invalid response as
+  `INVALID`. It classifies a missing result and a malformed final status as
+  `NO_REPORT`.
   - Raw output stays on disk for diagnosis.
 - The wrapper reads the system prompt and the selected role prompt from disk at
   the start of every turn.
@@ -478,7 +483,8 @@ go on, with `scope` and `quota_*_used` printed as `unknown`.
 | `GLM_VERDICT status=DONE` | The worker finished. | Check the result file and `files_changed`. |
 | `GLM_VERDICT status=BLOCKED` | The worker declared itself blocked. | Read the result file and decide. |
 | `GLM_VERDICT status=INVALID class=quota-exhausted` | The quota ran out during the turn (`fallback=true`). | Turn GLM off until the quota resets and go native; the working tree changes remain. |
-| `GLM_VERDICT status=INVALID class=worker-protocol` | The result contract was violated; the work may be done, possibly in another repository. | Read the `--- Response ---` section and decide. Verify the result and the diff when the reply reports completion or `files_changed` is above 0. `files_changed=0` alone does not justify a retry; retry only when no response section prints. |
+| `GLM_VERDICT status=NO_REPORT class=- next=<read-reply or inspect-changes>` | The turn ended without a valid result file. This is not an error. The work may be done, possibly in another repository. | Do not close the worker or resend the task. Read the `--- Response ---` section, or check the working tree when `next=inspect-changes`. Verify the result and the diff when the reply reports completion or `files_changed` is above 0. |
+| `GLM_VERDICT status=INVALID class=worker-protocol` | The response was malformed or its session did not match. | The state of the work is unknown. Check `files_changed` and the working tree, then ask the user before a retry. |
 | `GLM_VERDICT status=INVALID class=<other>` | An authentication, model, or transient failure. | Record the class and ask the user. |
 | `GLM_STALLED label=<l> worker=<id> idle_seconds=<n>` | No progress signal for `--stall-timeout` seconds. | `cancel`, then start again once with the same model under a new label. |
 | `GLM_STILL_RUNNING label=<l> worker=<id> waited_seconds=<n>` | `--max-wait` was reached; the worker keeps running. | `attach` again or `cancel`. |
@@ -495,12 +501,13 @@ go on, with `scope` and `quota_*_used` printed as `unknown`.
 | Field | Value |
 | --- | --- |
 | `label`, `worker` | The label and the worker ID |
-| `status` | `DONE`, `BLOCKED`, or `INVALID` |
+| `status` | `DONE`, `BLOCKED`, `NO_REPORT`, or `INVALID` |
 | `class` | The worker's `ERROR_KIND`, or `-` when empty |
 | `result` | The absolute path of the result file, or `-` |
 | `files_changed` | The count of files changed since the start; `na` outside a git repository |
 | `quota_1w_delta` | The change in the weekly `USED` value since the start (`+n`, `-n`, `0`, or `unknown`), including usage by other sessions on the same key |
 | `fallback` | `true` when the CLI reports `FALLBACK_RECOMMENDED=true`, otherwise `false` |
+| `next` | Only with `NO_REPORT`: `read-reply` or `inspect-changes` |
 
 Blocks follow `GLM_VERDICT`:
 
@@ -508,7 +515,7 @@ Blocks follow `GLM_VERDICT`:
   `# Remaining Issues` sections of the result file. Each block is cut at 20
   lines and ends with `... (truncated)` when cut.
 - Both blocks are omitted when no result file exists.
-- When a `worker-protocol` turn has no result file, a `--- Response ---` block
+- When a `NO_REPORT` turn has no result file, a `--- Response ---` block
   follows `GLM_VERDICT`.
   - The block holds the first 20 lines of the worker reply and ends with
     `... (truncated)` when cut.
@@ -517,7 +524,7 @@ Blocks follow `GLM_VERDICT`:
 
 | Exit code | Line |
 | --- | --- |
-| 0 | `GLM_RECEIPT` without `--wait`, `GLM_VERDICT status=DONE`, `pending`, or a successful `ack` |
+| 0 | `GLM_RECEIPT` without `--wait`, `GLM_VERDICT status=DONE` or `status=NO_REPORT`, `pending`, or a successful `ack` |
 | 1 | `GLM_VERDICT` with another status, `GLM_ACK_REFUSED`, `GLM_CLOSE_REFUSED` |
 | 2 | Invalid arguments or an unknown label: one stderr line `glm-dispatch: <reason>`, no stdout |
 | 10 | `GLM_BLOCKED` |
@@ -599,8 +606,8 @@ uses `haiku` for `glm-agent:explorer` and `sonnet` for
 
 | Exit status | Meaning |
 | --- | --- |
-| 0 | The command succeeded. `DONE` and `BLOCKED` are both successful turns |
-| 1 | The Claude invocation or the worker result protocol failed (`STATUS=INVALID`) |
+| 0 | The command succeeded. `DONE`, `BLOCKED`, and `NO_REPORT` are all successful turns |
+| 1 | The Claude invocation or the worker response failed (`STATUS=INVALID`) |
 | 2 | Invalid CLI usage, configuration, dependency, or worker state |
 
 ## Worker state
@@ -627,6 +634,13 @@ turns/
   session ID.
 - Asynchronous headless turns also contain `runner.log`.
 - `close` only marks a worker closed. The directory and all turn data stay.
+- `start` deletes a worker that has finished (`DONE`, `BLOCKED`, `NO_REPORT`, or
+  `INVALID`) and has seen no activity for `GLM_WORKER_RETENTION_DAYS` days. It
+  checks at most once per 24 hours, whether or not the worker is closed.
+  - A `RUNNING` or `NEW` worker, a directory without `meta`, and a locked
+    worker stay.
+  - Each deletion is logged in `~/.glm/cleanup.log`. The cleanup never changes
+    the output of `start`.
 
 ## Configuration
 
@@ -653,6 +667,7 @@ These environment variables change the defaults:
 | `GLM_AGENT_HOME` | Changes the state directory, which is useful for isolated tests |
 | `GLM_SYSTEM_PROMPT_FILE` | Names the system prompt Markdown file; the default is `system-prompt.md` next to the executable |
 | `GLM_ROLE_PROMPTS_DIR` | Names the directory with `explorer.md` and `general-purpose.md`; the default is `prompts/` next to the executable |
+| `GLM_WORKER_RETENTION_DAYS` | Sets how many days a finished worker is kept after its last activity; the default is `21`, and `0` turns the cleanup off |
 | `ZAI_QUOTA_ORGANIZATION`, `ZAI_QUOTA_PROJECT` | Override the stored team-scope selectors one by one |
 | `GLM_DISPATCH_CLI` | Replaces the CLI path in `glm-dispatch`; it exists for the tests |
 

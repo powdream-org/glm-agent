@@ -98,8 +98,9 @@ assert_contains 'a quota-exhausted turn reports class and fallback' \
   "$(verdict_of)" ' class=quota-exhausted '
 assert_contains 'a quota-exhausted turn recommends fallback' "$(verdict_of)" ' fallback=true'
 run_wait malformed "$TEST_ROOT/malformed.md"
-assert_contains 'a malformed result is classified worker-protocol' \
-  "$(verdict_of)" ' class=worker-protocol '
+assert_contains 'a malformed result is reported as NO_REPORT' \
+  "$(verdict_of)" ' status=NO_REPORT class=- '
+assert_eq 'a NO_REPORT verdict exits 0' 0 "$RC"
 run_wait missing "$TEST_ROOT/missing.md"
 assert_eq 'a missing result file omits both section headers' 0 \
   "$(grep -c -E '^--- (Summary|Remaining Issues) ---$' <<<"$OUTPUT" || true)"

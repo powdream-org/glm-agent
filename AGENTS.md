@@ -54,7 +54,8 @@ Preserve these unless the requested change explicitly revises the contract:
 - Each turn has `prompt.md`, `response.json`, `stderr.log`, and `result.md`.
 - `GLM_RESULT_FILE` is an absolute path to the turn's canonical durable report.
 - A valid report ends with exactly `STATUS: DONE` or `STATUS: BLOCKED`.
-- Invocation failures and missing or malformed results become `INVALID`.
+- Invocation failures and malformed provider data become `INVALID`. A turn that
+  ends without a valid result file becomes `NO_REPORT`.
 - Starting a background process alone is not completion.
 - `close` preserves worker history and rejects later `send` calls.
 - API keys and Claude session IDs must not appear in normal stdout.

@@ -54,7 +54,7 @@ TURN, and STATUS=RUNNING. Semantic completion comes from a later wait or status
 response with STATUS=DONE or STATUS=BLOCKED. WAIT_RESULT=TIMEOUT routes the
 current RUNNING receipt back to the parent for another bounded observation.
 ACTION=cancel reaches completion only when the CLI returns a terminal STATUS
-(DONE, BLOCKED, or INVALID) together with CANCEL_RESULT=CANCELLED or
+(DONE, BLOCKED, NO_REPORT, or INVALID) together with CANCEL_RESULT=CANCELLED or
 CANCEL_RESULT=ALREADY_TERMINAL. CANCEL_RESULT=PENDING pairs with a
 non-terminal STATUS and means the worker has not yet settled — route it back
 to the parent for another bounded wait or a repeated cancel, the same as

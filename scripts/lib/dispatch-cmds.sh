@@ -59,7 +59,7 @@ dd_cmd_pending() {
     acked="$(dd_kv_get_file "$file" acked)"
     status="$(dd_worker_status "$worker")"
     case "$status" in
-      DONE|BLOCKED|INVALID)
+      DONE|BLOCKED|NO_REPORT|INVALID)
         if [[ "$acked" == true ]]; then
           continue
         fi
@@ -82,7 +82,7 @@ dd_cmd_ack() {
   dd_require_label
   status="$(dd_worker_status "$DD_WORKER")"
   case "$status" in
-    DONE|BLOCKED|INVALID)
+    DONE|BLOCKED|NO_REPORT|INVALID)
       dd_registry_put "$DD_SESSION" "$DD_LABEL" acked true
       printf 'GLM_ACK label=%s\n' "$DD_LABEL"
       ;;

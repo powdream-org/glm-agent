@@ -9,6 +9,7 @@ make_brief block.md $'# Task\nWAIT_FOR_RELEASE\n'
 make_brief silent.md $'# Task\nBLOCK_SILENT\n'
 make_brief create.md $'# Task\nCREATE_FILE\n'
 make_brief touch.md $'# Task\nTOUCH_TRACKED\n'
+make_brief missing.md $'# Task\nMISSING_RESULT\n'
 REGISTRY="$GLM_AGENT_HOME/dispatch"
 
 start_label() {
@@ -197,5 +198,15 @@ send_case
 assert_eq 'send re-applies the quota gate before sending' \
   "10|GLM_BLOCKED row=4 reset_at=2026-10-03T05:37:58Z scope=personal" "$RC|$OUTPUT"
 assert_eq 'a blocked send never calls the CLI send' 0 "$(($(fake_cli_calls send) - calls_before))"
+
+use_real_cli
+next_session
+start_label noreport missing.md --wait --poll-seconds 1
+assert_eq 'a NO_REPORT turn exits 0' 0 "$RC"
+dispatch pending --session "$SESSION"
+assert_eq 'pending lists a NO_REPORT worker as terminal-unacked' \
+  "GLM_PENDING label=noreport worker=$WORKER state=terminal-unacked status=NO_REPORT" "$OUTPUT"
+dispatch ack --session "$SESSION" --label noreport
+assert_eq 'ack acknowledges a NO_REPORT worker' "0|GLM_ACK label=noreport" "$RC|$OUTPUT"
 
 finish

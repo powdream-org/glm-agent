@@ -20,12 +20,17 @@ fake_status() {
   printf 'RESULT=%s\nERROR_KIND=%s\nPROVIDER_CODE=\nFALLBACK_RECOMMENDED=false\nACTIVE_MODE=\nACTIVE_TURN=\n' "$2" "$3"
 }
 
+fake_no_report_status() {
+  printf 'WORKER_ID=w-fake\nSTATUS=NO_REPORT\nTURN=1\nMODEL=sonnet\nROLE=general-purpose\nCWD=%s\nCLOSED=false\n' "$PROJECT"
+  printf 'RESULT=\nERROR_KIND=\nPROVIDER_CODE=\nREASON=result-file-missing\nREPLY=%s\nNEXT=%s\nFALLBACK_RECOMMENDED=false\nACTIVE_MODE=\nACTIVE_TURN=\n' "$TURN_DIR/reply.md" "${1:-read-reply}"
+}
+
 prepare_fake() {
   use_fake_cli
   fake_cli_set quota "$(fake_quota_healthy)"
   fake_cli_set start "$(fake_receipt w-fake 1 sonnet general-purpose RUNNING)"
   fake_cli_set wait $'WORKER_ID=w-fake\nWAIT_RESULT=TERMINAL'
-  fake_cli_set status "$(fake_status INVALID '' worker-protocol)"
+  fake_cli_set status "$(fake_no_report_status)"
 }
 
 write_response() {
@@ -44,8 +49,8 @@ verdict_of() {
   grep '^GLM_VERDICT' <<<"$OUTPUT" || true
 }
 
-protocol_verdict() {
-  printf 'GLM_VERDICT label=%s worker=w-fake status=INVALID class=worker-protocol result=- files_changed=na quota_1w_delta=0 fallback=false' "$1"
+no_report_verdict() {
+  printf 'GLM_VERDICT label=%s worker=w-fake status=NO_REPORT class=- result=- files_changed=na quota_1w_delta=0 fallback=false next=%s' "$1" "${2:-read-reply}"
 }
 
 response_part() {
@@ -57,16 +62,16 @@ response_headers() {
 }
 
 assert_no_response() {
-  assert_eq "$1" "1|$(protocol_verdict "$2")|0" "$RC|$(verdict_of)|$(response_headers)"
+  assert_eq "$1" "0|$(no_report_verdict "$2")|0" "$RC|$(verdict_of)|$(response_headers)"
 }
 
 prepare_fake
 write_response $'Task finished.\nCommitted abc123 in ../other-repo.'
 run_wait reply
-assert_eq 'R8 a worker-protocol turn without a result file prints the worker reply right after the verdict' \
-  "$(protocol_verdict reply)"$'\n--- Response ---\nTask finished.\nCommitted abc123 in ../other-repo.' \
+assert_eq 'R8 a NO_REPORT turn without a result file prints the worker reply right after the verdict' \
+  "$(no_report_verdict reply)"$'\n--- Response ---\nTask finished.\nCommitted abc123 in ../other-repo.' \
   "$(sed -n '/^GLM_VERDICT/,$p' <<<"$OUTPUT")"
-assert_eq 'R8 the reply section leaves the exit code at 1' 1 "$RC"
+assert_eq 'R8 a NO_REPORT turn exits 0' 0 "$RC"
 
 write_response "$(for n in {1..25}; do printf 'reply line %d\n' "$n"; done)"
 run_wait long
@@ -116,9 +121,21 @@ assert_eq 'R8 an INVALID turn of another class prints no response section' "1|0"
 
 fake_cli_set status "$(fake_status INVALID "$FAKE_RESULT" worker-protocol)"
 run_wait withresult
-assert_eq 'R8 a worker-protocol turn that has a result file prints no response section' "1|0" "$RC|$(response_headers)"
+assert_eq 'R8 an INVALID worker-protocol turn that has a result file prints no response section' "1|0" "$RC|$(response_headers)"
 
 fake_cli_set status "$(fake_status INVALID '' worker-protocol)"
+run_wait invalidproto
+assert_eq 'R8 an INVALID worker-protocol turn without a result file prints no response section' "1|0" "$RC|$(response_headers)"
+
+fake_cli_set status "$(fake_no_report_status inspect-changes)"
+run_wait inspect
+assert_contains 'R8 a NO_REPORT turn relays next=inspect-changes' "$(verdict_of)" ' next=inspect-changes'
+
+fake_cli_set status "$(fake_no_report_status 'garbage value')"
+run_wait oddnext
+assert_contains 'R8 an unknown NEXT value falls back to next=inspect-changes' "$(verdict_of)" ' next=inspect-changes'
+
+fake_cli_set status "$(fake_no_report_status)"
 rm -f "$RESPONSE_FILE"
 run_wait nofile
 assert_no_response 'R8 a missing response file prints no response section and keeps the exit code' nofile
@@ -150,7 +167,7 @@ next_session
 dispatch run --session "$SESSION" --label real --role general-purpose --model sonnet --cwd "$PROJECT" \
   --task-file "$MISSING" --wait --poll-seconds 1
 assert_eq 'R8 run --wait with a real worker that wrote no result file prints the worker reply' \
-  "1|class=worker-protocol|--- Response ---"$'\nok' \
+  "0|class=-|--- Response ---"$'\nok' \
   "$RC|$(sed -n 's/^GLM_VERDICT .* \(class=[a-z-]*\) .*/\1/p' <<<"$OUTPUT")|$(response_part)"
 
 next_session
@@ -158,11 +175,11 @@ dispatch run --session "$SESSION" --label twoturn --role general-purpose --model
   --task-file "$PLAIN" --wait --poll-seconds 1
 dispatch send --session "$SESSION" --label twoturn --task-file "$MISSING" --wait --poll-seconds 1
 assert_eq 'R8 send --wait prints the worker reply of the second turn' \
-  "1|class=worker-protocol|--- Response ---"$'\nok' \
+  "0|class=-|--- Response ---"$'\nok' \
   "$RC|$(sed -n 's/^GLM_VERDICT .* \(class=[a-z-]*\) .*/\1/p' <<<"$OUTPUT")|$(response_part)"
 dispatch attach --session "$SESSION" --label twoturn --poll-seconds 1
 assert_eq 'R8 attach prints the same worker reply' \
-  "1|class=worker-protocol|--- Response ---"$'\nok' \
+  "0|class=-|--- Response ---"$'\nok' \
   "$RC|$(sed -n 's/^GLM_VERDICT .* \(class=[a-z-]*\) .*/\1/p' <<<"$OUTPUT")|$(response_part)"
 
 finish

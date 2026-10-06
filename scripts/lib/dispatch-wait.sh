@@ -136,8 +136,8 @@ dd_emit_result_sections() {
 }
 
 dd_emit_response_section() {
-  local status="$1" class="$2" result="$3" worker="$4" turn="$5" file text
-  if [[ "$status" != INVALID || "$class" != worker-protocol || -n "$result" ]]; then
+  local status="$1" result="$2" worker="$3" turn="$4" file text
+  if [[ "$status" != NO_REPORT || -n "$result" ]]; then
     return 0
   fi
   if [[ ! "$turn" =~ ^[0-9]+$ ]]; then
@@ -169,13 +169,19 @@ dd_format_delta() {
 }
 
 dd_emit_verdict() {
-  local label="$1" worker="$2" out status class result fallback delta turn
+  local label="$1" worker="$2" out status class result fallback delta turn next=""
   out="$(dd_cli status "$worker" 2>/dev/null)" || true
   status="$(dd_kv_get "$out" STATUS)"
   case "$status" in
-    DONE|BLOCKED|INVALID) ;;
+    DONE|BLOCKED|NO_REPORT|INVALID) ;;
     *) status=INVALID ;;
   esac
+  if [[ "$status" == NO_REPORT ]]; then
+    next="$(dd_kv_get "$out" NEXT)"
+    if [[ "$next" != read-reply && "$next" != inspect-changes ]]; then
+      next=inspect-changes
+    fi
+  fi
   class="$(dd_kv_get "$out" ERROR_KIND)"
   if [[ ! "$class" =~ ^[A-Za-z0-9._-]+$ ]]; then
     class=-
@@ -191,11 +197,11 @@ dd_emit_verdict() {
   fi
   delta="$(dd_format_delta "$(dd_registry_get "$DD_SESSION" "$label" quota_1w_used)" "$(dd_read_quota_1w_used)")"
   dd_git_report "$label"
-  printf 'GLM_VERDICT label=%s worker=%s status=%s class=%s result=%s files_changed=%s quota_1w_delta=%s fallback=%s\n' \
-    "$label" "$worker" "$status" "$class" "$(dd_encode_token "${result:--}")" "$DD_FILES_CHANGED" "$delta" "$fallback"
-  dd_emit_response_section "$status" "$class" "$result" "$worker" "$turn"
+  printf 'GLM_VERDICT label=%s worker=%s status=%s class=%s result=%s files_changed=%s quota_1w_delta=%s fallback=%s%s\n' \
+    "$label" "$worker" "$status" "$class" "$(dd_encode_token "${result:--}")" "$DD_FILES_CHANGED" "$delta" "$fallback" "${next:+ next=$next}"
+  dd_emit_response_section "$status" "$result" "$worker" "$turn"
   dd_emit_result_sections "$result"
-  [[ "$status" == DONE ]]
+  [[ "$status" == DONE || "$status" == NO_REPORT ]]
 }
 
 dd_judge() {

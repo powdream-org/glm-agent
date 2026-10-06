@@ -324,7 +324,7 @@ if [[ -f "$dispatch_skill" ]]; then
   for keyword in GLM_BLOCKED GLM_NOT_REACHED GLM_RECEIPT GLM_VERDICT \
     GLM_STALLED GLM_STILL_RUNNING GLM_WARN --wait --max-wait --stall-timeout \
     --task-file --session "\${CLAUDE_SESSION_ID}" run_in_background \
-    'timeout: 7200000' CronCreate pending attach worker-protocol quota-exhausted; do
+    'timeout: 7200000' CronCreate pending attach worker-protocol NO_REPORT quota-exhausted; do
     assert_contains "dispatch skill body mentions $keyword" "$dispatch_body" "$keyword"
   done
   if [[ -f "$quota_rows" ]]; then

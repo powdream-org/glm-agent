@@ -88,8 +88,9 @@ Each event is one stdout line with space-free values. Read every `GLM_` line, th
 | `GLM_RECEIPT label=<l> worker=<id> turn=<n> role=<r> model=<m> cwd=<dir> scope=<s> quota_5h_used=<n> quota_1w_used=<n>` | The worker started. Its `meta` exists, role, model, and cwd match, and `STATUS=RUNNING` | Quote the line verbatim in the work log |
 | `GLM_VERDICT ... status=DONE` | The worker finished | Read the result file and check `files_changed` |
 | `GLM_VERDICT ... status=BLOCKED` | The worker declared itself blocked | Read the result file and judge |
+| `GLM_VERDICT ... status=NO_REPORT class=- ... next=<read-reply or inspect-changes>` | The turn ended without a valid result file. This is not an error. The work may be done | Do not close the worker and do not resend the task. When `next=read-reply`, read the `--- Response ---` section and judge from it. When `next=inspect-changes`, check `files_changed` and the working tree yourself. If more is needed, `send` one line to the same worker. The worker may have worked outside `cwd`, in another repository for example |
 | `GLM_VERDICT ... status=INVALID class=quota-exhausted` | The quota ran out (`fallback=true`) | Turn GLM off until the quota resets. Native takes over. The worktree changes remain |
-| `GLM_VERDICT ... status=INVALID class=worker-protocol` | The turn ended without a valid result file. The work may be done | Read the `--- Response ---` section and judge from it. If the reply says the work is done, or `files_changed` is above 0, verify the result and the diff yourself. The worker may have worked outside `cwd`, in another repository for example, so retry only when no Response section is printed |
+| `GLM_VERDICT ... status=INVALID class=worker-protocol` | The response was malformed or its session did not match | The state of the work is unknown. Check `files_changed` and the working tree, log the class, and ask the user before you retry |
 | `GLM_VERDICT ... status=INVALID class=<any other>` | Authentication, model, or transient failure | Log the class and ask the user |
 | `GLM_STALLED label=<l> worker=<id> idle_seconds=<n>` | No progress signal for `--stall-timeout` seconds | `cancel`, then start again once with the same `--model` under a new label. If it stalls again, report a fault to the user |
 | `GLM_STILL_RUNNING label=<l> worker=<id> waited_seconds=<n>` | `--max-wait` was reached and the worker keeps running | Wait again with `attach`, or `cancel` |
@@ -108,10 +109,10 @@ A `GLM_NOT_REACHED` run leaves the registry unchanged.
 - `--- Summary ---` and `--- Remaining Issues ---` blocks follow `GLM_VERDICT`.
   - Each block holds the result file's section, cut to 20 lines with a closing `... (truncated)`.
   - Both blocks are omitted when no result file exists.
-  - A `worker-protocol` turn without a result file prints a `--- Response ---` block right after `GLM_VERDICT` instead.
+  - A `NO_REPORT` turn without a result file prints a `--- Response ---` block right after `GLM_VERDICT` instead.
   - That block holds the first 20 lines of the worker's reply, closed by `... (truncated)` when the reply is longer.
-  - It prints only when the turn reported no error and the reply is non-empty. `DONE`, `BLOCKED`, and other `INVALID` classes never print it.
-- A turn can end `INVALID` with `worker-protocol` after the work is finished. Read the Response section and `files_changed` before you call it a failure.
+  - It prints only when the turn reported no error and the reply is non-empty. `DONE`, `BLOCKED`, and `INVALID` never print it.
+- A turn can end `NO_REPORT` after the work is finished. Read the Response section and `files_changed` before you call it a failure. `NO_REPORT` is not a failure.
 - `GLM_STALLED` needs the worker's CPU time to be readable. When it cannot be read, the wait runs until `--max-wait` and ends with `GLM_STILL_RUNNING`.
 - In `GLM_RECEIPT` and in the registry, each space in `cwd` is written as `%20`.
 
@@ -119,7 +120,7 @@ Exit codes:
 
 | Code | Event |
 | --- | --- |
-| 0 | `GLM_VERDICT status=DONE`; a `run` or `send` without `--wait` that printed `GLM_RECEIPT`; `pending` |
+| 0 | `GLM_VERDICT status=DONE` or `status=NO_REPORT`; a `run` or `send` without `--wait` that printed `GLM_RECEIPT`; `pending` |
 | 1 | `GLM_VERDICT` with `BLOCKED` or `INVALID`; a refused `ack` or `close` |
 | 2 | Argument check failure or usage error: one stderr line `glm-dispatch: <reason>`, no stdout |
 | 10 | `GLM_BLOCKED` |
