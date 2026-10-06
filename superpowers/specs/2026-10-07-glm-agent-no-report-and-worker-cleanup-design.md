@@ -106,7 +106,7 @@ FALLBACK_RECOMMENDED=false
 
 - `dd_emit_verdict` 는 `NO_REPORT` 를 인식한다. 지금은 모르는 값을 `INVALID` 로 바꾼다 (`dispatch-wait.sh` 176행).
 - `GLM_VERDICT` 는 `status=NO_REPORT class=-` 로 나가고 줄 끝에 `next=read-reply` 또는 `next=inspect-changes` 를 붙인다. 다른 status 의 줄은 바뀌지 않는다.
-- `--- Response ---` 블록은 `NO_REPORT` 이고 결과 파일이 없을 때 낸다. 조건은 지금과 같다. 본문은 `REPLY` 파일에서 읽는다.
+- `--- Response ---` 블록은 `NO_REPORT` 이고 결과 파일이 없을 때 낸다. 본문은 지금처럼 `response.json` 에서 읽는다. jq 조건은 CLI 가 `reply.md` 를 쓸 때와 같다.
 - `glm-dispatch` 의 종료 코드는 `NO_REPORT` 에서 0 이다.
 - `pending` 과 `ack` 의 종료 상태 목록에 `NO_REPORT` 를 더한다 (`dispatch-cmds.sh` 62·85행).
 
@@ -129,9 +129,9 @@ AGENTS.md 의 불변 조건을 고친다.
 
 ### 5.2 순서
 
-1. `GLM_WORKER_RETENTION_DAYS` 를 읽는다. 비어 있으면 21 이다. 숫자(`^[0-9]+$`)가 아니면 `cleanup.log` 에 경고를 쓰고 끝낸다. 0 이면 스탬프도 건드리지 않고 끝낸다.
+1. `GLM_WORKER_RETENTION_DAYS` 를 읽는다. 비어 있으면 21 이다. 0 이면 스탬프도 건드리지 않고 끝낸다.
 2. 스탬프 파일 `$GLM_AGENT_HOME/.cleanup-stamp` 의 수정 시각이 24 시간 안이면 끝낸다.
-3. 스탬프를 지금 시각으로 갱신한다. 스캔 전에 갱신한다. 동시에 뜬 `start` 의 중복 스캔을 줄인다.
+3. 스탬프를 지금 시각으로 갱신한다. 스캔 전에 갱신한다. 동시에 뜬 `start` 의 중복 스캔을 줄인다. 기한이 숫자(`^[0-9]+$`)가 아니면 `cleanup.log` 에 경고를 쓰고 끝낸다. 스탬프를 먼저 갱신하므로 경고는 하루 한 번만 쓴다.
 4. 후보를 모은다: `find "$WORKERS_DIR" -mindepth 2 -maxdepth 2 -name meta -mmin +<기한×1440>`.
 5. 후보마다 아래를 확인한다. 하나라도 틀리면 건너뛴다.
    - 디렉터리 이름이 `^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$` 이고 `WORKERS_DIR` 바로 아래에 있다.
