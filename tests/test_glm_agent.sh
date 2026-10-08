@@ -3078,7 +3078,7 @@ assert_auth_add_rejected 'add team with a positional argument' \
   'accepts no positional arguments: extra' \
   team --name x --api-key k --organization o --project p extra
 
-for bad_name in 'bad name' '-lead' '.lead' 'a/b' '..' 'caf'$'\303\251' $'a\nb'; do
+for bad_name in 'bad name' '-lead' '.lead' '@lead' '@' 'a/b' '..' 'caf'$'\303\251' $'a\nb'; do
   assert_auth_add_rejected "add rejects the account name [${bad_name//$'\n'/\\n}]" \
     'account name' personal --name "$bad_name" --api-key k
 done
@@ -3346,6 +3346,71 @@ assert_eq 'remove after a migration prints MIGRATED_ACCOUNT first' \
 auth_cli auth remove personal
 assert_eq 'the migrated account is active and cannot be removed' '2|' \
   "$RC|$OUTPUT"
+
+# --- auth: account names containing @ ----------------------------------------
+auth_reset
+auth_cli auth add personal --name dev@jerry.company --api-key "$AUTH_KEY_ME"
+assert_eq 'add personal accepts an @ in the account name' \
+  $'0|ACCOUNT=ADDED\nNAME=dev@jerry.company\nTYPE=personal\nORGANIZATION=\nPROJECT=\nACTIVE=false' \
+  "$RC|$OUTPUT"
+assert_regular_file 'add personal stores the key under the @ name' \
+  "$AUTH_HOME/accounts/dev@jerry.company/api-key" "$AUTH_KEY_ME"
+auth_cli auth add team --name h_kang@toridori.co.jp --api-key "$AUTH_KEY_ACME" \
+  --organization "$AUTH_ORG" --project "$AUTH_PROJ"
+assert_eq 'add team accepts an @ in the account name' \
+  $'0|ACCOUNT=ADDED\nNAME=h_kang@toridori.co.jp\nTYPE=team\nORGANIZATION='"$AUTH_ORG"$'\nPROJECT='"$AUTH_PROJ"$'\nACTIVE=false' \
+  "$RC|$OUTPUT"
+assert_regular_file 'add team stores the scope under the @ name' \
+  "$AUTH_HOME/accounts/h_kang@toridori.co.jp/team-scope" \
+  $'organization='"$AUTH_ORG"$'\nproject='"$AUTH_PROJ"
+
+auth_cli auth switch h_kang@toridori.co.jp
+assert_eq 'switch accepts an @ name' \
+  $'0|ACCOUNT=ACTIVE\nNAME=h_kang@toridori.co.jp\nTYPE=team' "$RC|$OUTPUT"
+assert_symlink 'switch links .env.auth to the @ account key' \
+  "$AUTH_HOME/.env.auth" 'accounts/h_kang@toridori.co.jp/api-key'
+assert_symlink 'switch links .env.team-scope to the @ account scope' \
+  "$AUTH_HOME/.env.team-scope" 'accounts/h_kang@toridori.co.jp/team-scope'
+auth_cli auth list
+expected_at_list="$(cat <<EOF
+ACTIVE_ACCOUNT=h_kang@toridori.co.jp
+ACCOUNT_COUNT=2
+ACCOUNT_1_NAME=dev@jerry.company
+ACCOUNT_1_TYPE=personal
+ACCOUNT_1_ORGANIZATION=
+ACCOUNT_1_PROJECT=
+ACCOUNT_1_ACTIVE=false
+ACCOUNT_2_NAME=h_kang@toridori.co.jp
+ACCOUNT_2_TYPE=team
+ACCOUNT_2_ORGANIZATION=$AUTH_ORG
+ACCOUNT_2_PROJECT=$AUTH_PROJ
+ACCOUNT_2_ACTIVE=true
+EOF
+)"
+assert_eq 'list reports an @ account as active' \
+  "0|$expected_at_list" "$RC|$OUTPUT"
+
+auth_cli auth remove h_kang@toridori.co.jp
+assert_eq 'remove refuses the active @ account' '2|' "$RC|$OUTPUT"
+auth_cli auth switch dev@jerry.company
+auth_cli auth list
+assert_contains 'list reports the switched @ account as active' "$OUTPUT" \
+  $'ACTIVE_ACCOUNT=dev@jerry.company\n'
+assert_contains 'list marks the switched @ account active' "$OUTPUT" \
+  $'ACCOUNT_1_NAME=dev@jerry.company\nACCOUNT_1_TYPE=personal\nACCOUNT_1_ORGANIZATION=\nACCOUNT_1_PROJECT=\nACCOUNT_1_ACTIVE=true\n'
+auth_cli auth remove h_kang@toridori.co.jp
+assert_eq 'remove deletes an inactive @ account' \
+  $'0|ACCOUNT=REMOVED\nNAME=h_kang@toridori.co.jp' "$RC|$OUTPUT"
+assert_absent 'remove deletes the @ account directory' \
+  "$AUTH_HOME/accounts/h_kang@toridori.co.jp"
+
+auth_cli auth switch '@lead'
+assert_eq 'switch rejects a name that starts with @' '2|' "$RC|$OUTPUT"
+assert_contains 'the leading @ name is reported' "$STDERR" 'invalid account name'
+auth_cli auth remove '@lead'
+assert_eq 'remove rejects a name that starts with @' '2|' "$RC|$OUTPUT"
+assert_contains 'the leading @ name is reported on remove' "$STDERR" \
+  'invalid account name'
 
 # --- auth: api-key and team-scope under the account layout -------------------
 auth_reset

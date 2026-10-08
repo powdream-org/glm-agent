@@ -17,7 +17,7 @@ fi
 AUTH_FILE="$GLM_AGENT_HOME/.env.auth"
 TEAM_SCOPE_FILE="$GLM_AGENT_HOME/.env.team-scope"
 ACCOUNTS_DIR="$GLM_AGENT_HOME/accounts"
-ACCOUNT_NAME_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+ACCOUNT_NAME_PATTERN='^[A-Za-z0-9][A-Za-z0-9._@-]*$'
 WORKERS_DIR="$GLM_AGENT_HOME/workers"
 CLEANUP_STAMP_FILE="$GLM_AGENT_HOME/.cleanup-stamp"
 CLEANUP_LOG_FILE="$GLM_AGENT_HOME/cleanup.log"
@@ -88,7 +88,7 @@ COMMANDS
   auth add team --name <name> --api-key <key> --organization <org> --project <project>
       Save a named account in ~/.glm/accounts/<name>/. Every option is
       required and may appear once, in any order. A name matches
-      [A-Za-z0-9][A-Za-z0-9._-]*. --api-key - reads the key from one line of
+      [A-Za-z0-9][A-Za-z0-9._@-]*. --api-key - reads the key from one line of
       stdin, so the key stays out of the process list. An existing name is an
       error. add never changes the active account.
 
@@ -1832,11 +1832,14 @@ validate_account_name() {
 # Prints the active account name, or nothing. The name comes from the
 # .env.auth symlink target; there is no separate state file.
 active_account_name() {
-  local target
+  local target name
   [[ -L "$AUTH_FILE" ]] || return 0
   target="$(readlink "$AUTH_FILE")" || return 0
-  if [[ "$target" =~ ^accounts/([A-Za-z0-9][A-Za-z0-9._-]*)/api-key$ ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
+  if [[ "$target" =~ ^accounts/(.+)/api-key$ ]]; then
+    name="${BASH_REMATCH[1]}"
+    if [[ "$name" =~ $ACCOUNT_NAME_PATTERN ]]; then
+      printf '%s\n' "$name"
+    fi
   fi
 }
 

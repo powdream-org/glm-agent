@@ -96,7 +96,8 @@ ACTIVE=false
 
 - Each option is required and may appear once, in any order. There is no
   default, no prompt, and no `--force`.
-- A name matches `[A-Za-z0-9][A-Za-z0-9._-]*`. An existing name is an error.
+- A name matches `[A-Za-z0-9][A-Za-z0-9._@-]*`, so an email address such as
+  `me@example.com` works. An existing name is an error.
 - `--organization` and `--project` exist only for `add team`.
 - A key given as `--api-key "<key>"` can appear in shell history and process
   listings. `--api-key -` reads one line from stdin instead:
