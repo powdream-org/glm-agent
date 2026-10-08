@@ -2622,10 +2622,20 @@ auth_cli() {
   AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
 }
 
-# auth_quota [VAR=value ...]: runs quota against AUTH_HOME with the fake curl.
+# auth_quota: runs quota against AUTH_HOME with the fake curl.
 auth_quota() {
-  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$AUTH_HOME" "$@"
+  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$AUTH_HOME"
   AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+}
+
+# auth_tmp_leftovers: lists temporary links that a switch left in AUTH_HOME.
+auth_tmp_leftovers() {
+  local path
+  for path in "$AUTH_HOME"/.*.tmp.*; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      printf '%s\n' "${path##*/}"
+    fi
+  done
 }
 
 assert_absent() {
@@ -3182,7 +3192,7 @@ auth_cli auth list
 assert_contains 'list marks the switched account active' "$OUTPUT" \
   $'ACTIVE_ACCOUNT=me\n'
 assert_eq 'switch leaves no temporary link behind' '' \
-  "$(ls -A "$AUTH_HOME" | grep '\.tmp\.' || true)"
+  "$(auth_tmp_leftovers)"
 
 mkdir -p "$AUTH_HOME/accounts/no-key"
 for bad_switch in ghost no-key; do
@@ -3228,7 +3238,7 @@ assert_eq 'a team switch creates the scope link before swapping .env.auth' \
   'accounts/me/api-key|accounts/acme/team-scope' \
   "$(readlink "$AUTH_HOME/.env.auth")|$(readlink "$AUTH_HOME/.env.team-scope")"
 assert_eq 'a failing swap leaves no temporary link behind' '' \
-  "$(ls -A "$AUTH_HOME" | grep '\.tmp\.' || true)"
+  "$(auth_tmp_leftovers)"
 
 auth_cli auth switch acme
 capture env -u ZAI_API_KEY PATH="$auth_mv_bin:$PATH" \
@@ -3297,6 +3307,125 @@ assert_eq 'remove after a migration prints MIGRATED_ACCOUNT first' \
 auth_cli auth remove personal
 assert_eq 'the migrated account is active and cannot be removed' '2|' \
   "$RC|$OUTPUT"
+
+# --- auth: api-key and team-scope under the account layout -------------------
+auth_reset
+auth_cli auth add personal --name me --api-key "$AUTH_KEY_ME"
+auth_cli auth add team --name acme --api-key "$AUTH_KEY_ACME" \
+  --organization "$AUTH_ORG" --project "$AUTH_PROJ"
+auth_cli auth switch acme
+
+auth_cli api-key "$AUTH_KEY_ROTATED"
+assert_eq 'api-key on a managed account reports the account key path' \
+  $'0|API_KEY=SAVED\nAUTH_FILE='"$AUTH_HOME/accounts/acme/api-key" "$RC|$OUTPUT"
+assert_symlink 'api-key keeps the .env.auth link' \
+  "$AUTH_HOME/.env.auth" 'accounts/acme/api-key'
+assert_symlink 'api-key keeps the .env.team-scope link' \
+  "$AUTH_HOME/.env.team-scope" 'accounts/acme/team-scope'
+assert_regular_file 'api-key replaces the key in the account file' \
+  "$AUTH_HOME/accounts/acme/api-key" "$AUTH_KEY_ROTATED"
+assert_eq 'api-key keeps the account key file private' '600' \
+  "$(file_mode "$AUTH_HOME/accounts/acme/api-key")"
+assert_eq 'api-key leaves no temporary file in the account' \
+  $'api-key\nteam-scope' "$(ls -A "$AUTH_HOME/accounts/acme")"
+assert_regular_file 'api-key leaves other accounts alone' \
+  "$AUTH_HOME/accounts/me/api-key" "$AUTH_KEY_ME"
+auth_quota
+assert_eq 'quota sends the replaced key' \
+  $'Authorization: '"$AUTH_KEY_ROTATED"$'\nBigmodel-Organization: '"$AUTH_ORG"$'\nBigmodel-Project: '"$AUTH_PROJ" \
+  "$(cat "$FAKE_CURL_STDIN")"
+if grep -rqF --exclude='api-key' -- "$AUTH_KEY_ROTATED" "$AUTH_HOME"; then
+  fail 'only the account key file holds the key' "key found under $AUTH_HOME"
+else
+  pass 'only the account key file holds the key'
+fi
+
+auth_cli team-scope
+assert_eq 'team-scope shows the active account scope' \
+  $'0|TEAM_SCOPE=team\nORGANIZATION='"$AUTH_ORG"$'\nPROJECT='"$AUTH_PROJ" \
+  "$RC|$OUTPUT"
+auth_cli team-scope "$AUTH_ORG_OTHER" "$AUTH_PROJ_OTHER"
+assert_eq 'team-scope set is refused under a team account' '2|' "$RC|$OUTPUT"
+assert_contains 'the set refusal points to auth add team' "$STDERR" \
+  'glm-agent auth add team'
+auth_cli team-scope --clear
+assert_eq 'team-scope --clear is refused under a team account' '2|' \
+  "$RC|$OUTPUT"
+assert_contains 'the clear refusal points to auth add team' "$STDERR" \
+  'glm-agent auth add team'
+assert_regular_file 'a refused team-scope keeps the account scope' \
+  "$AUTH_HOME/accounts/acme/team-scope" \
+  $'organization='"$AUTH_ORG"$'\nproject='"$AUTH_PROJ"
+assert_symlink 'a refused team-scope keeps the scope link' \
+  "$AUTH_HOME/.env.team-scope" 'accounts/acme/team-scope'
+
+auth_cli auth switch me
+auth_cli api-key "$AUTH_KEY_OTHER"
+assert_eq 'api-key on a personal account reports the account key path' \
+  $'0|API_KEY=SAVED\nAUTH_FILE='"$AUTH_HOME/accounts/me/api-key" "$RC|$OUTPUT"
+assert_regular_file 'api-key replaces the personal account key' \
+  "$AUTH_HOME/accounts/me/api-key" "$AUTH_KEY_OTHER"
+auth_cli team-scope
+assert_eq 'team-scope shows the personal scope' \
+  $'0|TEAM_SCOPE=personal\nORGANIZATION=\nPROJECT=' "$RC|$OUTPUT"
+auth_cli team-scope "$AUTH_ORG" "$AUTH_PROJ"
+assert_eq 'team-scope set is refused under a personal account' '2|' \
+  "$RC|$OUTPUT"
+auth_cli team-scope --clear
+assert_eq 'team-scope --clear is refused under a personal account' '2|' \
+  "$RC|$OUTPUT"
+assert_absent 'a refused team-scope creates no scope link' \
+  "$AUTH_HOME/.env.team-scope"
+
+# The environment overrides still apply, and ZAI_API_KEY is still never read.
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$AUTH_HOME" \
+  ZAI_QUOTA_ORGANIZATION="$AUTH_ORG_OTHER" ZAI_QUOTA_PROJECT="$AUTH_PROJ_OTHER"
+AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+assert_eq 'environment selectors make a personal account query the team plan' \
+  $'Authorization: '"$AUTH_KEY_OTHER"$'\nBigmodel-Organization: '"$AUTH_ORG_OTHER"$'\nBigmodel-Project: '"$AUTH_PROJ_OTHER" \
+  "$(cat "$FAKE_CURL_STDIN")"
+auth_cli auth switch acme
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$AUTH_HOME" \
+  ZAI_QUOTA_PROJECT="$AUTH_PROJ_OTHER"
+AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+assert_eq 'an environment project overrides only the account project' \
+  $'Authorization: '"$AUTH_KEY_ROTATED"$'\nBigmodel-Organization: '"$AUTH_ORG"$'\nBigmodel-Project: '"$AUTH_PROJ_OTHER" \
+  "$(cat "$FAKE_CURL_STDIN")"
+quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$AUTH_HOME" \
+  ZAI_API_KEY='env-key-ignored-by-accounts'
+AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+assert_contains 'ZAI_API_KEY never replaces the account key' \
+  "$(cat "$FAKE_CURL_STDIN")" "Authorization: $AUTH_KEY_ROTATED"
+
+# Accounts without an active one: api-key keeps its legacy behavior.
+auth_reset
+auth_cli auth add personal --name me --api-key "$AUTH_KEY_ME"
+auth_cli api-key "$AUTH_KEY_LEGACY"
+assert_eq 'api-key without an active account writes the legacy file' \
+  $'0|API_KEY=SAVED\nAUTH_FILE='"$AUTH_HOME/.env.auth" "$RC|$OUTPUT"
+assert_regular_file 'the legacy key is a regular file' \
+  "$AUTH_HOME/.env.auth" "$AUTH_KEY_LEGACY"
+assert_regular_file 'the legacy api-key leaves accounts alone' \
+  "$AUTH_HOME/accounts/me/api-key" "$AUTH_KEY_ME"
+
+auth_reset
+auth_cli auth add personal --name me --api-key "$AUTH_KEY_ME"
+auth_cli run 'diagnostic'
+assert_eq 'a missing active account is a configuration error' '2|' \
+  "$RC|$OUTPUT"
+assert_contains 'the missing key error still names api-key' "$STDERR" \
+  'Run: glm-agent api-key'
+assert_contains 'the missing key error points to auth add' "$STDERR" \
+  'glm-agent auth add'
+assert_contains 'the missing key error points to auth switch' "$STDERR" \
+  'glm-agent auth switch <name>'
+
+# --- auth: no key reaches stdout or stderr -----------------------------------
+for auth_secret in "$AUTH_KEY_LEGACY" "$AUTH_KEY_ME" "$AUTH_KEY_ACME" \
+  "$AUTH_KEY_OTHER" "$AUTH_KEY_STDIN" "$AUTH_KEY_ROTATED"; do
+  assert_not_contains "no auth command prints [$auth_secret]" \
+    "$AUTH_SEEN" "$auth_secret"
+done
 
 touch_days_ago() {
   local path="$1" days="$2" epoch stamp

@@ -302,7 +302,7 @@ ensure_state_home() {
 # variable is deliberately never read.
 load_api_key() {
   [[ -f "$AUTH_FILE" ]] ||
-    die "API key is not configured. Run: $PROGRAM api-key"
+    die "API key is not configured. Run: $PROGRAM api-key, or add an account with '$PROGRAM auth add personal|team ...' and activate it with '$PROGRAM auth switch <name>'"
 
   API_KEY="$(<"$AUTH_FILE")" ||
     die "cannot read the stored API key: $AUTH_FILE"
@@ -1680,8 +1680,22 @@ cmd_api_key() {
   fi
   [[ -n "$key" ]] || die "API key must not be empty"
 
+  local account_name tmp
+  account_name="$(active_account_name)"
+  if [[ -n "$account_name" ]]; then
+    local account_key="$ACCOUNTS_DIR/$account_name/api-key"
+    tmp="$(mktemp "$ACCOUNTS_DIR/$account_name/.api-key.XXXXXX")" ||
+      die "cannot create a temporary file in $ACCOUNTS_DIR/$account_name"
+    chmod 600 "$tmp"
+    printf '%s\n' "$key" >"$tmp"
+    mv "$tmp" "$account_key"
+
+    printf 'API_KEY=SAVED\n'
+    printf 'AUTH_FILE=%s\n' "$account_key"
+    return 0
+  fi
+
   ensure_state_home
-  local tmp
   tmp="$(mktemp "$GLM_AGENT_HOME/.env.auth.XXXXXX")"
   chmod 600 "$tmp"
   printf '%s' "$key" >"$tmp"
@@ -1690,6 +1704,12 @@ cmd_api_key() {
 
   printf 'API_KEY=SAVED\n'
   printf 'AUTH_FILE=%s\n' "$AUTH_FILE"
+}
+
+reject_managed_team_scope() {
+  if [[ -L "$AUTH_FILE" || -L "$TEAM_SCOPE_FILE" ]]; then
+    die "the team scope belongs to the active account. Run: $PROGRAM auth add team --name <name> --api-key <key> --organization <org> --project <project>"
+  fi
 }
 
 cmd_team_scope() {
@@ -1703,6 +1723,7 @@ cmd_team_scope() {
 
   if [[ "$1" == --clear ]]; then
     (($# == 1)) || die "team-scope --clear accepts no other arguments"
+    reject_managed_team_scope
     rm -f -- "$TEAM_SCOPE_FILE"
     printf 'TEAM_SCOPE=CLEARED\n'
     return 0
@@ -1715,6 +1736,7 @@ cmd_team_scope() {
   [[ -n "$project" ]] || die "team project must not be empty"
   validate_single_line "team organization" "$organization"
   validate_single_line "team project" "$project"
+  reject_managed_team_scope
 
   ensure_state_home
   local tmp
