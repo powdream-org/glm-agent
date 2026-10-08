@@ -2021,12 +2021,61 @@ cmd_auth_list() {
   printf '%s' "$body"
 }
 
+# The two links are separate renames, so they do not change in one atomic
+# step. A team target gets its scope link first; a personal target loses the
+# scope link only after .env.auth moved.
+cmd_auth_switch() {
+  (($# == 1)) || auth_usage_die "auth switch requires exactly one account name"
+  local name="$1" dir type
+  validate_account_name "$name"
+  auth_adopt_legacy
+
+  dir="$ACCOUNTS_DIR/$name"
+  [[ -f "$dir/api-key" ]] || die "account not found: $name"
+  type="$(account_type "$dir")"
+  if [[ "$type" == team ]]; then
+    swap_link "accounts/$name/team-scope" "$TEAM_SCOPE_FILE"
+    swap_link "accounts/$name/api-key" "$AUTH_FILE"
+  else
+    swap_link "accounts/$name/api-key" "$AUTH_FILE"
+    rm -f -- "$TEAM_SCOPE_FILE"
+  fi
+
+  printf 'ACCOUNT=ACTIVE\n'
+  printf 'NAME=%s\n' "$name"
+  printf 'TYPE=%s\n' "$type"
+}
+
+cmd_auth_remove() {
+  (($# == 1)) || auth_usage_die "auth remove requires exactly one account name"
+  local name="$1" dir
+  validate_account_name "$name"
+  auth_adopt_legacy
+
+  dir="$ACCOUNTS_DIR/$name"
+  [[ -f "$dir/api-key" ]] || die "account not found: $name"
+  [[ "$(active_account_name)" != "$name" ]] ||
+    die "account $name is active. Run: $PROGRAM auth switch <other-name>, then remove it"
+  rm -rf -- "$dir" || die "cannot remove the account: $name"
+
+  printf 'ACCOUNT=REMOVED\n'
+  printf 'NAME=%s\n' "$name"
+}
+
 cmd_auth() {
   local subcommand="${1:-}"
   case "$subcommand" in
     add)
       shift
       cmd_auth_add "$@"
+      ;;
+    switch)
+      shift
+      cmd_auth_switch "$@"
+      ;;
+    remove)
+      shift
+      cmd_auth_remove "$@"
       ;;
     list)
       shift

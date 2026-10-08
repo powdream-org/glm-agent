@@ -2608,6 +2608,8 @@ AUTH_KEY_STDIN='fake-stdin-key-0005'
 AUTH_KEY_ROTATED='fake-rotated-key-0006'
 AUTH_ORG='org-AuthTestOrg0123456789'
 AUTH_PROJ='proj_AuthTestProj0123456789'
+AUTH_ORG_OTHER='org-AuthTestOther0123456789'
+AUTH_PROJ_OTHER='proj_AuthTestOther0123456789'
 
 auth_reset() {
   rm -rf -- "$AUTH_HOME"
@@ -3112,6 +3114,189 @@ auth_cli auth add personal --name personal --api-key "$AUTH_KEY_ME"
 assert_eq 'add rejects the name of the migrated account' '2' "$RC"
 assert_contains 'the migrated name is reported as taken' "$STDERR" \
   'account already exists: personal'
+
+# --- auth: switch ------------------------------------------------------------
+auth_reset
+auth_cli auth add personal --name me --api-key "$AUTH_KEY_ME"
+auth_cli auth add team --name acme --api-key "$AUTH_KEY_ACME" \
+  --organization "$AUTH_ORG" --project "$AUTH_PROJ"
+auth_cli auth add team --name other --api-key "$AUTH_KEY_OTHER" \
+  --organization "$AUTH_ORG_OTHER" --project "$AUTH_PROJ_OTHER"
+
+auth_cli auth switch me
+assert_eq 'switch to a personal account prints the receipt' \
+  $'0|ACCOUNT=ACTIVE\nNAME=me\nTYPE=personal' "$RC|$OUTPUT"
+assert_symlink 'switch links .env.auth with a relative target' \
+  "$AUTH_HOME/.env.auth" 'accounts/me/api-key'
+assert_absent 'a personal account has no team-scope link' \
+  "$AUTH_HOME/.env.team-scope"
+auth_quota
+assert_eq 'quota succeeds for the active personal account' '0' "$RC"
+assert_contains 'quota reports the personal scope' "$OUTPUT" $'SCOPE=personal\n'
+assert_eq 'quota sends the personal key and no selector headers' \
+  "Authorization: $AUTH_KEY_ME" "$(cat "$FAKE_CURL_STDIN")"
+assert_eq 'the personal lookup has no type=2' \
+  'arg=https://api.z.ai/api/monitor/usage/quota/limit' \
+  "$(tail -n 1 "$FAKE_CURL_LOG")"
+
+auth_cli auth switch acme
+assert_eq 'switch to a team account prints the receipt' \
+  $'0|ACCOUNT=ACTIVE\nNAME=acme\nTYPE=team' "$RC|$OUTPUT"
+assert_symlink 'switch to a team account links .env.auth' \
+  "$AUTH_HOME/.env.auth" 'accounts/acme/api-key'
+assert_symlink 'switch to a team account links .env.team-scope' \
+  "$AUTH_HOME/.env.team-scope" 'accounts/acme/team-scope'
+auth_quota
+assert_contains 'quota reports the team scope' "$OUTPUT" $'SCOPE=team\n'
+assert_eq 'quota sends the team key and both selector headers' \
+  $'Authorization: '"$AUTH_KEY_ACME"$'\nBigmodel-Organization: '"$AUTH_ORG"$'\nBigmodel-Project: '"$AUTH_PROJ" \
+  "$(cat "$FAKE_CURL_STDIN")"
+assert_eq 'the team lookup uses type=2' \
+  'arg=https://api.z.ai/api/monitor/usage/quota/limit?type=2' \
+  "$(tail -n 1 "$FAKE_CURL_LOG")"
+
+auth_cli auth switch other
+assert_eq 'switch between team accounts repoints both links' \
+  "0|accounts/other/api-key|accounts/other/team-scope" \
+  "$RC|$(readlink "$AUTH_HOME/.env.auth")|$(readlink "$AUTH_HOME/.env.team-scope")"
+auth_quota
+assert_eq 'quota follows the second team account' \
+  $'Authorization: '"$AUTH_KEY_OTHER"$'\nBigmodel-Organization: '"$AUTH_ORG_OTHER"$'\nBigmodel-Project: '"$AUTH_PROJ_OTHER" \
+  "$(cat "$FAKE_CURL_STDIN")"
+
+auth_cli auth switch me
+assert_eq 'switch back to a personal account removes the team-scope link' \
+  '0|accounts/me/api-key' "$RC|$(readlink "$AUTH_HOME/.env.auth")"
+assert_absent 'the team-scope link is gone' "$AUTH_HOME/.env.team-scope"
+assert_regular_file 'switching never touches the team-scope file' \
+  "$AUTH_HOME/accounts/other/team-scope" \
+  $'organization='"$AUTH_ORG_OTHER"$'\nproject='"$AUTH_PROJ_OTHER"
+auth_quota
+assert_eq 'quota is personal again' "Authorization: $AUTH_KEY_ME" \
+  "$(cat "$FAKE_CURL_STDIN")"
+
+auth_cli auth switch me
+assert_eq 'switching to the active account succeeds' \
+  $'0|ACCOUNT=ACTIVE\nNAME=me\nTYPE=personal' "$RC|$OUTPUT"
+auth_cli auth list
+assert_contains 'list marks the switched account active' "$OUTPUT" \
+  $'ACTIVE_ACCOUNT=me\n'
+assert_eq 'switch leaves no temporary link behind' '' \
+  "$(ls -A "$AUTH_HOME" | grep '\.tmp\.' || true)"
+
+mkdir -p "$AUTH_HOME/accounts/no-key"
+for bad_switch in ghost no-key; do
+  auth_cli auth switch "$bad_switch"
+  assert_eq "switch to [$bad_switch] exits 2 with empty stdout" '2|' "$RC|$OUTPUT"
+  assert_contains "switch to [$bad_switch] says the account is missing" \
+    "$STDERR" "account not found: $bad_switch"
+done
+assert_symlink 'a refused switch keeps the active account' \
+  "$AUTH_HOME/.env.auth" 'accounts/me/api-key'
+auth_cli auth switch '../escape'
+assert_eq 'switch rejects an unsafe account name' '2|' "$RC|$OUTPUT"
+assert_contains 'the unsafe name is reported' "$STDERR" 'invalid account name'
+auth_cli auth switch
+assert_eq 'switch without a name is a usage error' '2|' "$RC|$OUTPUT"
+assert_contains 'switch without a name prints a short usage line' "$STDERR" \
+  'usage: glm-agent auth'
+auth_cli auth switch me acme
+assert_eq 'switch with two names is a usage error' '2|' "$RC|$OUTPUT"
+
+# The two links are not swapped in one step: a team target gets its scope link
+# first, and a personal target loses its scope link only after .env.auth moved.
+auth_real_mv="$(command -v mv)"
+auth_mv_bin="$TEST_ROOT/auth-bin-mv-auth-fails"
+mkdir -p "$auth_mv_bin"
+cat >"$auth_mv_bin/mv" <<EOF
+#!/bin/sh
+for last; do :; done
+case "\$last" in
+  */.env.auth) exit 1 ;;
+esac
+exec "$auth_real_mv" "\$@"
+EOF
+chmod +x "$auth_mv_bin/mv"
+
+capture env -u ZAI_API_KEY PATH="$auth_mv_bin:$PATH" \
+  GLM_AGENT_HOME="$AUTH_HOME" "$SCRIPT" auth switch acme
+AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+assert_eq 'a failing .env.auth swap exits 2 with empty stdout' '2|' "$RC|$OUTPUT"
+assert_contains 'the failing swap names the link' "$STDERR" \
+  "cannot replace $AUTH_HOME/.env.auth"
+assert_eq 'a team switch creates the scope link before swapping .env.auth' \
+  'accounts/me/api-key|accounts/acme/team-scope' \
+  "$(readlink "$AUTH_HOME/.env.auth")|$(readlink "$AUTH_HOME/.env.team-scope")"
+assert_eq 'a failing swap leaves no temporary link behind' '' \
+  "$(ls -A "$AUTH_HOME" | grep '\.tmp\.' || true)"
+
+auth_cli auth switch acme
+capture env -u ZAI_API_KEY PATH="$auth_mv_bin:$PATH" \
+  GLM_AGENT_HOME="$AUTH_HOME" "$SCRIPT" auth switch me
+AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+assert_eq 'a personal switch keeps the scope link until .env.auth moved' \
+  "2|accounts/acme/api-key|accounts/acme/team-scope" \
+  "$RC|$(readlink "$AUTH_HOME/.env.auth")|$(readlink "$AUTH_HOME/.env.team-scope")"
+
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+auth_cli auth switch personal
+assert_eq 'switch is a migrating subcommand' \
+  $'0|MIGRATED_ACCOUNT=personal\nACCOUNT=ACTIVE\nNAME=personal\nTYPE=personal' \
+  "$RC|$OUTPUT"
+
+# --- auth: remove ------------------------------------------------------------
+auth_reset
+auth_cli auth add personal --name me --api-key "$AUTH_KEY_ME"
+auth_cli auth add team --name acme --api-key "$AUTH_KEY_ACME" \
+  --organization "$AUTH_ORG" --project "$AUTH_PROJ"
+auth_cli auth add team --name other --api-key "$AUTH_KEY_OTHER" \
+  --organization "$AUTH_ORG_OTHER" --project "$AUTH_PROJ_OTHER"
+auth_cli auth switch acme
+
+auth_cli auth remove acme
+assert_eq 'remove refuses the active account' '2|' "$RC|$OUTPUT"
+assert_contains 'the active refusal tells the user to switch first' "$STDERR" \
+  'auth switch'
+assert_regular_file 'a refused remove keeps the account' \
+  "$AUTH_HOME/accounts/acme/api-key" "$AUTH_KEY_ACME"
+
+auth_cli auth remove ghost
+assert_eq 'remove refuses a missing account' '2|' "$RC|$OUTPUT"
+assert_contains 'the missing account is named' "$STDERR" \
+  'account not found: ghost'
+auth_cli auth remove '../escape'
+assert_eq 'remove rejects an unsafe account name' '2|' "$RC|$OUTPUT"
+auth_cli auth remove
+assert_eq 'remove without a name is a usage error' '2|' "$RC|$OUTPUT"
+assert_contains 'remove without a name prints a short usage line' "$STDERR" \
+  'usage: glm-agent auth'
+auth_cli auth remove me other
+assert_eq 'remove with two names is a usage error' '2|' "$RC|$OUTPUT"
+
+auth_cli auth remove other
+assert_eq 'remove deletes an inactive team account' \
+  $'0|ACCOUNT=REMOVED\nNAME=other' "$RC|$OUTPUT"
+assert_absent 'remove deletes the account directory' "$AUTH_HOME/accounts/other"
+auth_cli auth remove me
+assert_eq 'remove deletes an inactive personal account' \
+  $'0|ACCOUNT=REMOVED\nNAME=me' "$RC|$OUTPUT"
+assert_eq 'remove leaves the active links untouched' \
+  'accounts/acme/api-key|accounts/acme/team-scope' \
+  "$(readlink "$AUTH_HOME/.env.auth")|$(readlink "$AUTH_HOME/.env.team-scope")"
+auth_cli auth list
+assert_eq 'list shows only the remaining account' \
+  $'ACTIVE_ACCOUNT=acme\nACCOUNT_COUNT=1' \
+  "$(printf '%s\n' "$OUTPUT" | sed -n '1,2p')"
+
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+auth_cli auth remove ghost
+assert_eq 'remove after a migration prints MIGRATED_ACCOUNT first' \
+  '2|MIGRATED_ACCOUNT=personal' "$RC|$OUTPUT"
+auth_cli auth remove personal
+assert_eq 'the migrated account is active and cannot be removed' '2|' \
+  "$RC|$OUTPUT"
 
 touch_days_ago() {
   local path="$1" days="$2" epoch stamp
