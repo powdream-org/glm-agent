@@ -2597,6 +2597,287 @@ actual_quota_example="$(printf '%s\n' "$expected_quota_ok" |
 assert_eq 'README quota example matches the CLI output' \
   "$actual_quota_example" "$readme_quota_example"
 
+# --- auth: helpers -----------------------------------------------------------
+AUTH_HOME="$TEST_ROOT/auth-home"
+AUTH_SEEN=''
+AUTH_KEY_LEGACY='fake-legacy-key-0001'
+AUTH_KEY_ME='fake-me-key-0002'
+AUTH_KEY_ACME='fake-acme-key-0003'
+AUTH_KEY_OTHER='fake-other-key-0004'
+AUTH_KEY_ROTATED='fake-rotated-key-0006'
+AUTH_ORG='org-AuthTestOrg0123456789'
+AUTH_PROJ='proj_AuthTestProj0123456789'
+
+auth_reset() {
+  rm -rf -- "$AUTH_HOME"
+}
+
+# auth_cli <glm-agent args...>: runs the CLI against AUTH_HOME and records the
+# output so the key scans at the end can prove no key was ever printed.
+auth_cli() {
+  capture env -u ZAI_API_KEY GLM_AGENT_HOME="$AUTH_HOME" "$SCRIPT" "$@"
+  AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+}
+
+# auth_quota [VAR=value ...]: runs quota against AUTH_HOME with the fake curl.
+auth_quota() {
+  quota_case 200 "$QUOTA_FIXTURES/ok.json" 0 GLM_AGENT_HOME="$AUTH_HOME" "$@"
+  AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+}
+
+assert_absent() {
+  local name="$1" path="$2"
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    pass "$name"
+  else
+    fail "$name" "unexpected path: $path"
+  fi
+}
+
+assert_symlink() {
+  local name="$1" path="$2" target="$3"
+  if [[ -L "$path" ]]; then
+    assert_eq "$name" "$target" "$(readlink "$path")"
+  else
+    fail "$name" "not a symlink: $path"
+  fi
+}
+
+assert_regular_file() {
+  local name="$1" path="$2" content="$3"
+  if [[ -f "$path" && ! -L "$path" ]]; then
+    assert_eq "$name" "$content" "$(cat "$path")"
+  else
+    fail "$name" "not a regular file: $path"
+  fi
+}
+
+# --- auth: usage errors ------------------------------------------------------
+auth_reset
+auth_cli auth
+assert_eq 'auth without a subcommand is a usage error' '2|' "$RC|$OUTPUT"
+assert_contains 'auth without a subcommand prints a short usage line' \
+  "$STDERR" 'usage: glm-agent auth'
+auth_cli auth bogus
+assert_eq 'auth with an unknown subcommand is a usage error' '2|' "$RC|$OUTPUT"
+assert_contains 'unknown auth subcommand is named' "$STDERR" \
+  'unknown auth subcommand: bogus'
+assert_contains 'unknown auth subcommand prints a short usage line' \
+  "$STDERR" 'usage: glm-agent auth'
+assert_not_contains 'auth usage error is not the full help' "$STDERR" 'DESCRIPTION'
+auth_cli auth list extra
+assert_eq 'auth list accepts no arguments' '2|' "$RC|$OUTPUT"
+assert_absent 'auth usage errors create no state' "$AUTH_HOME"
+
+# --- auth: list --------------------------------------------------------------
+auth_cli auth list
+assert_eq 'auth list without any state reports no accounts' \
+  $'0|ACTIVE_ACCOUNT=\nACCOUNT_COUNT=0' "$RC|$OUTPUT"
+assert_absent 'auth list creates no state' "$AUTH_HOME"
+
+mkdir -p "$AUTH_HOME/accounts/Zeta" "$AUTH_HOME/accounts/alpha" \
+  "$AUTH_HOME/accounts/Beta" "$AUTH_HOME/accounts/.tmp.stale" \
+  "$AUTH_HOME/accounts/no-key"
+printf '%s\n' "$AUTH_KEY_ME" >"$AUTH_HOME/accounts/Zeta/api-key"
+printf '%s\n' "$AUTH_KEY_ACME" >"$AUTH_HOME/accounts/alpha/api-key"
+printf '%s\n' "$AUTH_KEY_OTHER" >"$AUTH_HOME/accounts/Beta/api-key"
+printf 'organization=%s\nproject=%s\n' "$AUTH_ORG" "$AUTH_PROJ" \
+  >"$AUTH_HOME/accounts/Beta/team-scope"
+printf '%s\n' "$AUTH_KEY_ME" >"$AUTH_HOME/accounts/.tmp.stale/api-key"
+ln -s accounts/alpha/api-key "$AUTH_HOME/.env.auth"
+auth_cli auth list
+expected_sorted_list="$(cat <<EOF
+ACTIVE_ACCOUNT=alpha
+ACCOUNT_COUNT=3
+ACCOUNT_1_NAME=Beta
+ACCOUNT_1_TYPE=team
+ACCOUNT_1_ORGANIZATION=$AUTH_ORG
+ACCOUNT_1_PROJECT=$AUTH_PROJ
+ACCOUNT_1_ACTIVE=false
+ACCOUNT_2_NAME=Zeta
+ACCOUNT_2_TYPE=personal
+ACCOUNT_2_ORGANIZATION=
+ACCOUNT_2_PROJECT=
+ACCOUNT_2_ACTIVE=false
+ACCOUNT_3_NAME=alpha
+ACCOUNT_3_TYPE=personal
+ACCOUNT_3_ORGANIZATION=
+ACCOUNT_3_PROJECT=
+ACCOUNT_3_ACTIVE=true
+EOF
+)"
+assert_eq 'auth list sorts accounts in C order and marks the active one' \
+  "0|$expected_sorted_list" "$RC|$OUTPUT"
+
+printf 'organization=%s\n' "$AUTH_ORG" >"$AUTH_HOME/accounts/Beta/team-scope"
+auth_cli auth list
+assert_eq 'auth list rejects a malformed team scope' '2|' "$RC|$OUTPUT"
+assert_contains 'malformed scope error names the file' "$STDERR" \
+  "$AUTH_HOME/accounts/Beta/team-scope"
+
+# --- auth: migration of the legacy layout ------------------------------------
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+auth_cli auth list
+expected_migrated_personal="$(cat <<EOF
+MIGRATED_ACCOUNT=personal
+ACTIVE_ACCOUNT=personal
+ACCOUNT_COUNT=1
+ACCOUNT_1_NAME=personal
+ACCOUNT_1_TYPE=personal
+ACCOUNT_1_ORGANIZATION=
+ACCOUNT_1_PROJECT=
+ACCOUNT_1_ACTIVE=true
+EOF
+)"
+assert_eq 'a legacy key without a scope migrates to the personal account' \
+  "0|$expected_migrated_personal" "$RC|$OUTPUT"
+assert_symlink 'migration links .env.auth with a relative target' \
+  "$AUTH_HOME/.env.auth" 'accounts/personal/api-key'
+assert_regular_file 'migration moves the key into the account' \
+  "$AUTH_HOME/accounts/personal/api-key" "$AUTH_KEY_LEGACY"
+assert_eq 'the key stays readable through .env.auth' "$AUTH_KEY_LEGACY" \
+  "$(cat "$AUTH_HOME/.env.auth")"
+assert_absent 'a personal migration leaves no team-scope link' \
+  "$AUTH_HOME/.env.team-scope"
+assert_absent 'a personal migration leaves no team-scope file' \
+  "$AUTH_HOME/accounts/personal/team-scope"
+assert_eq 'accounts directory is private' '700' "$(file_mode "$AUTH_HOME/accounts")"
+assert_eq 'migrated account directory is private' '700' \
+  "$(file_mode "$AUTH_HOME/accounts/personal")"
+assert_eq 'migrated key file is private' '600' \
+  "$(file_mode "$AUTH_HOME/accounts/personal/api-key")"
+assert_eq 'migration leaves only the account in accounts' 'personal' \
+  "$(ls -A "$AUTH_HOME/accounts")"
+auth_cli auth list
+assert_eq 'migration happens once' \
+  "0|$(printf '%s\n' "$expected_migrated_personal" | sed '1d')" "$RC|$OUTPUT"
+
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+auth_cli team-scope "$AUTH_ORG" "$AUTH_PROJ"
+auth_cli auth list
+expected_migrated_team="$(cat <<EOF
+MIGRATED_ACCOUNT=team
+ACTIVE_ACCOUNT=team
+ACCOUNT_COUNT=1
+ACCOUNT_1_NAME=team
+ACCOUNT_1_TYPE=team
+ACCOUNT_1_ORGANIZATION=$AUTH_ORG
+ACCOUNT_1_PROJECT=$AUTH_PROJ
+ACCOUNT_1_ACTIVE=true
+EOF
+)"
+assert_eq 'a legacy key with a scope migrates to the team account' \
+  "0|$expected_migrated_team" "$RC|$OUTPUT"
+assert_symlink 'team migration links .env.auth' \
+  "$AUTH_HOME/.env.auth" 'accounts/team/api-key'
+assert_symlink 'team migration links .env.team-scope' \
+  "$AUTH_HOME/.env.team-scope" 'accounts/team/team-scope'
+assert_regular_file 'team migration moves the key' \
+  "$AUTH_HOME/accounts/team/api-key" "$AUTH_KEY_LEGACY"
+assert_regular_file 'team migration moves the scope' \
+  "$AUTH_HOME/accounts/team/team-scope" \
+  $'organization='"$AUTH_ORG"$'\nproject='"$AUTH_PROJ"
+assert_eq 'migrated team directory is private' '700' \
+  "$(file_mode "$AUTH_HOME/accounts/team")"
+assert_eq 'migrated team key file is private' '600' \
+  "$(file_mode "$AUTH_HOME/accounts/team/api-key")"
+assert_eq 'migrated team scope file is private' '600' \
+  "$(file_mode "$AUTH_HOME/accounts/team/team-scope")"
+auth_cli team-scope
+assert_eq 'team-scope shows the scope through the migrated link' \
+  $'0|TEAM_SCOPE=team\nORGANIZATION='"$AUTH_ORG"$'\nPROJECT='"$AUTH_PROJ" \
+  "$RC|$OUTPUT"
+
+# Refusals move nothing and print nothing on stdout.
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+mkdir -p "$AUTH_HOME/accounts/personal"
+auth_cli auth list
+assert_eq 'migration refuses when accounts/personal exists' '2|' "$RC|$OUTPUT"
+assert_contains 'the personal refusal names the account directory' "$STDERR" \
+  "$AUTH_HOME/accounts/personal"
+assert_regular_file 'a refused personal migration keeps the legacy key' \
+  "$AUTH_HOME/.env.auth" "$AUTH_KEY_LEGACY"
+assert_eq 'a refused personal migration moves nothing' '' \
+  "$(ls -A "$AUTH_HOME/accounts/personal")"
+
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+auth_cli team-scope "$AUTH_ORG" "$AUTH_PROJ"
+mkdir -p "$AUTH_HOME/accounts/team"
+auth_cli auth list
+assert_eq 'migration refuses when accounts/team exists' '2|' "$RC|$OUTPUT"
+assert_regular_file 'a refused team migration keeps the legacy key' \
+  "$AUTH_HOME/.env.auth" "$AUTH_KEY_LEGACY"
+assert_regular_file 'a refused team migration keeps the legacy scope' \
+  "$AUTH_HOME/.env.team-scope" \
+  $'organization='"$AUTH_ORG"$'\nproject='"$AUTH_PROJ"
+assert_eq 'a refused team migration moves nothing' '' \
+  "$(ls -A "$AUTH_HOME/accounts/team")"
+
+auth_reset
+mkdir -p "$AUTH_HOME"
+printf 'organization=%s\nproject=%s\n' "$AUTH_ORG" "$AUTH_PROJ" \
+  >"$AUTH_HOME/.env.team-scope"
+auth_cli auth list
+assert_eq 'migration refuses a legacy scope without a legacy key' \
+  '2|' "$RC|$OUTPUT"
+assert_contains 'the scope-only refusal names the scope file' "$STDERR" \
+  "$AUTH_HOME/.env.team-scope"
+assert_regular_file 'a scope-only refusal keeps the scope file' \
+  "$AUTH_HOME/.env.team-scope" \
+  $'organization='"$AUTH_ORG"$'\nproject='"$AUTH_PROJ"
+assert_absent 'a scope-only refusal creates no accounts directory' \
+  "$AUTH_HOME/accounts"
+
+auth_reset
+mkdir -p "$AUTH_HOME"
+ln -s accounts/ghost/api-key "$AUTH_HOME/.env.auth"
+auth_cli auth list
+assert_eq 'migration refuses a dangling .env.auth symlink' '2|' "$RC|$OUTPUT"
+assert_contains 'the dangling refusal says so' "$STDERR" 'dangling'
+assert_symlink 'a dangling refusal keeps the symlink' \
+  "$AUTH_HOME/.env.auth" 'accounts/ghost/api-key'
+
+auth_reset
+mkdir -p "$AUTH_HOME"
+printf '%s\n' "$AUTH_KEY_LEGACY" >"$TEST_ROOT/foreign-key"
+ln -s "$TEST_ROOT/foreign-key" "$AUTH_HOME/.env.auth"
+auth_cli auth list
+assert_eq 'auth refuses a .env.auth symlink that leaves accounts/' \
+  '2|' "$RC|$OUTPUT"
+assert_symlink 'a foreign symlink stays untouched' \
+  "$AUTH_HOME/.env.auth" "$TEST_ROOT/foreign-key"
+
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+auth_cli auth bogus
+assert_eq 'a usage error does not migrate the legacy layout' '2|' "$RC|$OUTPUT"
+assert_regular_file 'the legacy key survives a usage error' \
+  "$AUTH_HOME/.env.auth" "$AUTH_KEY_LEGACY"
+assert_absent 'a usage error creates no accounts directory' \
+  "$AUTH_HOME/accounts"
+
+# Only auth subcommands migrate.
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+auth_quota
+assert_eq 'quota still works on the legacy layout' '0' "$RC"
+assert_eq 'quota still sends the legacy key' \
+  "Authorization: $AUTH_KEY_LEGACY" "$(cat "$FAKE_CURL_STDIN")"
+auth_cli team-scope
+assert_eq 'team-scope still shows the legacy scope' \
+  $'0|TEAM_SCOPE=personal\nORGANIZATION=\nPROJECT=' "$RC|$OUTPUT"
+auth_cli api-key "$AUTH_KEY_ROTATED"
+assert_eq 'api-key still reports the legacy file' \
+  "0|API_KEY=SAVED"$'\n'"AUTH_FILE=$AUTH_HOME/.env.auth" "$RC|$OUTPUT"
+assert_regular_file 'commands outside auth keep the legacy key a regular file' \
+  "$AUTH_HOME/.env.auth" "$AUTH_KEY_ROTATED"
+assert_absent 'commands outside auth create no accounts directory' \
+  "$AUTH_HOME/accounts"
+
 touch_days_ago() {
   local path="$1" days="$2" epoch stamp
   epoch="$(( $(date +%s) - days * 86400 ))"

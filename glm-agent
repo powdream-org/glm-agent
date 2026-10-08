@@ -16,6 +16,8 @@ fi
 
 AUTH_FILE="$GLM_AGENT_HOME/.env.auth"
 TEAM_SCOPE_FILE="$GLM_AGENT_HOME/.env.team-scope"
+ACCOUNTS_DIR="$GLM_AGENT_HOME/accounts"
+ACCOUNT_NAME_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 WORKERS_DIR="$GLM_AGENT_HOME/workers"
 CLEANUP_STAMP_FILE="$GLM_AGENT_HOME/.cleanup-stamp"
 CLEANUP_LOG_FILE="$GLM_AGENT_HOME/cleanup.log"
@@ -1727,6 +1729,194 @@ cmd_team_scope() {
   printf 'PROJECT=%s\n' "$project"
 }
 
+auth_usage_die() {
+  printf '%s: %s\n' "$PROGRAM" "$1" >&2
+  printf 'usage: %s auth add personal|team ... | switch <name> | remove <name> | list\n' \
+    "$PROGRAM" >&2
+  exit 2
+}
+
+validate_account_name() {
+  validate_single_line "account name" "$1"
+  [[ "$1" =~ $ACCOUNT_NAME_PATTERN ]] || die "invalid account name: $1"
+}
+
+# Prints the active account name, or nothing. The name comes from the
+# .env.auth symlink target; there is no separate state file.
+active_account_name() {
+  local target
+  [[ -L "$AUTH_FILE" ]] || return 0
+  target="$(readlink "$AUTH_FILE")" || return 0
+  if [[ "$target" =~ ^accounts/([A-Za-z0-9][A-Za-z0-9._-]*)/api-key$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+account_type() {
+  if [[ -f "$1/team-scope" ]]; then
+    printf 'team\n'
+  else
+    printf 'personal\n'
+  fi
+}
+
+# Sets SCOPE_ORGANIZATION and SCOPE_PROJECT from a team-scope file.
+read_scope_file() {
+  local raw org proj
+  raw="$(cat "$1")" || die "cannot read the team scope: $1"
+  org="${raw%%$'\n'*}"
+  proj="${raw#*$'\n'}"
+  [[ "$org" == organization=* ]] ||
+    die "team scope file must start with an organization= line: $1"
+  [[ "$proj" == project=* ]] ||
+    die "team scope file must carry a project= line: $1"
+  SCOPE_ORGANIZATION="${org#organization=}"
+  SCOPE_PROJECT="${proj#project=}"
+}
+
+# swap_link <relative-target> <link>: replaces <link> in one rename.
+swap_link() {
+  local target="$1" link="$2" tmp="$2.tmp.$$"
+  rm -f -- "$tmp"
+  ln -s -- "$target" "$tmp" || die "cannot create a symlink in $GLM_AGENT_HOME"
+  mv -f -- "$tmp" "$link" || {
+    rm -f -- "$tmp"
+    die "cannot replace $link"
+  }
+}
+
+AUTH_TMP_DIR=''
+
+auth_cleanup() {
+  [[ -n "$AUTH_TMP_DIR" && -d "$AUTH_TMP_DIR" ]] || return 0
+  rm -f -- "$AUTH_TMP_DIR/api-key" "$AUTH_TMP_DIR/team-scope"
+  rmdir -- "$AUTH_TMP_DIR" 2>/dev/null || true
+}
+
+# An account is built in a temporary directory and renamed into place, so a
+# failure never leaves a half-written account.
+stage_account_dir() {
+  ensure_state_home
+  mkdir -p "$ACCOUNTS_DIR" || die "cannot create $ACCOUNTS_DIR"
+  chmod 700 "$ACCOUNTS_DIR"
+  AUTH_TMP_DIR="$(mktemp -d "$ACCOUNTS_DIR/.tmp.XXXXXX")" ||
+    die "cannot create a temporary directory in $ACCOUNTS_DIR"
+  trap auth_cleanup EXIT
+  chmod 700 "$AUTH_TMP_DIR"
+}
+
+publish_account_dir() {
+  mv -- "$AUTH_TMP_DIR" "$ACCOUNTS_DIR/$1" || die "cannot create the account: $1"
+  AUTH_TMP_DIR=''
+}
+
+# Runs first in every auth subcommand. A regular .env.auth is the legacy
+# layout: it is adopted as an account and replaced by symlinks. Refusals
+# happen before anything moves.
+auth_adopt_legacy() {
+  local name scope_is_file=0
+
+  if [[ -f "$TEAM_SCOPE_FILE" && ! -L "$TEAM_SCOPE_FILE" ]]; then
+    scope_is_file=1
+  fi
+
+  if [[ -f "$AUTH_FILE" && ! -L "$AUTH_FILE" ]]; then
+    name=personal
+    if ((scope_is_file)); then
+      name=team
+    fi
+    if [[ -e "$ACCOUNTS_DIR/$name" || -L "$ACCOUNTS_DIR/$name" ]]; then
+      die "cannot adopt the legacy API key as account $name: $ACCOUNTS_DIR/$name already exists. Move it away and run the command again"
+    fi
+
+    stage_account_dir
+    (umask 077; cat "$AUTH_FILE" >"$AUTH_TMP_DIR/api-key") ||
+      die "cannot read the legacy API key: $AUTH_FILE"
+    if ((scope_is_file)); then
+      (umask 077; cat "$TEAM_SCOPE_FILE" >"$AUTH_TMP_DIR/team-scope") ||
+        die "cannot read the legacy team scope: $TEAM_SCOPE_FILE"
+    fi
+    publish_account_dir "$name"
+
+    swap_link "accounts/$name/api-key" "$AUTH_FILE"
+    if ((scope_is_file)); then
+      swap_link "accounts/$name/team-scope" "$TEAM_SCOPE_FILE"
+    fi
+    printf 'MIGRATED_ACCOUNT=%s\n' "$name"
+    return 0
+  fi
+
+  if ((scope_is_file)); then
+    die "$TEAM_SCOPE_FILE is a regular file but $AUTH_FILE is not. Run: $PROGRAM api-key, then run the command again, or delete the scope file"
+  fi
+  if [[ -L "$AUTH_FILE" ]]; then
+    [[ -e "$AUTH_FILE" ]] ||
+      die "$AUTH_FILE is a dangling symlink. Delete it, then run: $PROGRAM auth switch <name>"
+    [[ -n "$(active_account_name)" ]] ||
+      die "$AUTH_FILE is a symlink that does not point to accounts/<name>/api-key"
+  fi
+}
+
+account_names() {
+  local dir name
+  for dir in "$ACCOUNTS_DIR"/*/; do
+    [[ -f "${dir}api-key" ]] || continue
+    name="${dir%/}"
+    name="${name##*/}"
+    [[ "$name" =~ $ACCOUNT_NAME_PATTERN ]] || continue
+    printf '%s\n' "$name"
+  done | LC_ALL=C sort
+}
+
+cmd_auth_list() {
+  (($# == 0)) || auth_usage_die "auth list accepts no arguments"
+  auth_adopt_legacy
+
+  local active names name type body='' count=0
+  active="$(active_account_name)"
+  names="$(account_names)"
+  if [[ -n "$names" ]]; then
+    while IFS= read -r name; do
+      count=$((count + 1))
+      type="$(account_type "$ACCOUNTS_DIR/$name")"
+      SCOPE_ORGANIZATION=''
+      SCOPE_PROJECT=''
+      if [[ "$type" == team ]]; then
+        read_scope_file "$ACCOUNTS_DIR/$name/team-scope"
+      fi
+      body+="ACCOUNT_${count}_NAME=$name"$'\n'
+      body+="ACCOUNT_${count}_TYPE=$type"$'\n'
+      body+="ACCOUNT_${count}_ORGANIZATION=$SCOPE_ORGANIZATION"$'\n'
+      body+="ACCOUNT_${count}_PROJECT=$SCOPE_PROJECT"$'\n'
+      if [[ "$name" == "$active" ]]; then
+        body+="ACCOUNT_${count}_ACTIVE=true"$'\n'
+      else
+        body+="ACCOUNT_${count}_ACTIVE=false"$'\n'
+      fi
+    done <<<"$names"
+  fi
+
+  printf 'ACTIVE_ACCOUNT=%s\n' "$active"
+  printf 'ACCOUNT_COUNT=%s\n' "$count"
+  printf '%s' "$body"
+}
+
+cmd_auth() {
+  local subcommand="${1:-}"
+  case "$subcommand" in
+    list)
+      shift
+      cmd_auth_list "$@"
+      ;;
+    "")
+      auth_usage_die "auth requires a subcommand"
+      ;;
+    *)
+      auth_usage_die "unknown auth subcommand: $subcommand"
+      ;;
+  esac
+}
+
 cmd_run() {
   (($# > 0)) || die "run requires a prompt"
   load_api_key
@@ -2475,6 +2665,10 @@ main() {
     team-scope)
       shift
       cmd_team_scope "$@"
+      ;;
+    auth)
+      shift
+      cmd_auth "$@"
       ;;
     run)
       shift
