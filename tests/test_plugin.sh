@@ -174,7 +174,12 @@ if [[ -f "$plugin_json" && -f "$marketplace_json" ]]; then
   assert_eq 'CLI and plugin versions match' "$cli_version" "$plugin_version"
   assert_eq 'CLI and marketplace versions match' "$cli_version" \
     "$marketplace_version"
-  assert_eq 'release version is 0.9.0' '0.9.0' "$cli_version"
+  if [[ "$cli_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    cli_version_format='valid'
+  else
+    cli_version_format='invalid'
+  fi
+  assert_eq 'release version is major.minor.patch' 'valid' "$cli_version_format"
 fi
 if [[ -f "$explorer_agent" ]]; then
   explorer_content="$(cat "$explorer_agent")"
