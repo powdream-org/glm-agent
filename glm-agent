@@ -1868,6 +1868,126 @@ account_names() {
   done | LC_ALL=C sort
 }
 
+# Sets ADD_NAME, ADD_API_KEY, ADD_ORGANIZATION, and ADD_PROJECT. Every option
+# is required and may appear once; organization and project exist only for
+# the team kind.
+parse_add_options() {
+  local kind="$1" option value missing=''
+  local seen_name=0 seen_api_key=0 seen_organization=0 seen_project=0
+  shift
+  ADD_NAME='' ADD_API_KEY='' ADD_ORGANIZATION='' ADD_PROJECT=''
+
+  while (($#)); do
+    option="$1"
+    case "$option" in
+      --name|--api-key)
+        ;;
+      --organization|--project)
+        [[ "$kind" == team ]] ||
+          die "unknown option for auth add $kind: $option"
+        ;;
+      -*)
+        die "unknown option for auth add $kind: $option"
+        ;;
+      *)
+        die "auth add accepts no positional arguments: $option"
+        ;;
+    esac
+    (($# >= 2)) || die "$option requires a value"
+    value="$2"
+    case "$value" in
+      --name|--api-key|--organization|--project)
+        die "$option requires a value"
+        ;;
+    esac
+    [[ -n "$value" ]] || die "$option must not be empty"
+
+    case "$option" in
+      --name)
+        ((seen_name == 0)) || die "--name given more than once"
+        seen_name=1
+        ADD_NAME="$value"
+        ;;
+      --api-key)
+        ((seen_api_key == 0)) || die "--api-key given more than once"
+        seen_api_key=1
+        ADD_API_KEY="$value"
+        ;;
+      --organization)
+        ((seen_organization == 0)) || die "--organization given more than once"
+        seen_organization=1
+        ADD_ORGANIZATION="$value"
+        ;;
+      --project)
+        ((seen_project == 0)) || die "--project given more than once"
+        seen_project=1
+        ADD_PROJECT="$value"
+        ;;
+    esac
+    shift 2
+  done
+
+  ((seen_name)) || missing+=" --name"
+  ((seen_api_key)) || missing+=" --api-key"
+  if [[ "$kind" == team ]]; then
+    ((seen_organization)) || missing+=" --organization"
+    ((seen_project)) || missing+=" --project"
+  fi
+  [[ -z "$missing" ]] ||
+    die "auth add $kind is missing required option(s):$missing"
+}
+
+cmd_auth_add() {
+  local kind="${1:-}"
+  case "$kind" in
+    personal|team)
+      shift
+      ;;
+    "")
+      auth_usage_die "auth add requires a kind: personal or team"
+      ;;
+    *)
+      auth_usage_die "unknown account kind: $kind"
+      ;;
+  esac
+
+  parse_add_options "$kind" "$@"
+  validate_account_name "$ADD_NAME"
+  if [[ "$ADD_API_KEY" == - ]]; then
+    ADD_API_KEY=''
+    IFS= read -r ADD_API_KEY || true
+    [[ -n "$ADD_API_KEY" ]] || die "no API key on stdin"
+  fi
+  validate_single_line "API key" "$ADD_API_KEY"
+  if [[ "$kind" == team ]]; then
+    validate_single_line "team organization" "$ADD_ORGANIZATION"
+    validate_single_line "team project" "$ADD_PROJECT"
+  fi
+
+  auth_adopt_legacy
+  [[ ! -e "$ACCOUNTS_DIR/$ADD_NAME" && ! -L "$ACCOUNTS_DIR/$ADD_NAME" ]] ||
+    die "account already exists: $ADD_NAME"
+
+  stage_account_dir
+  (umask 077; printf '%s\n' "$ADD_API_KEY" >"$AUTH_TMP_DIR/api-key") ||
+    die "cannot write the API key in $AUTH_TMP_DIR"
+  if [[ "$kind" == team ]]; then
+    (
+      umask 077
+      printf 'organization=%s\nproject=%s\n' "$ADD_ORGANIZATION" "$ADD_PROJECT" \
+        >"$AUTH_TMP_DIR/team-scope"
+    ) || die "cannot write the team scope in $AUTH_TMP_DIR"
+  fi
+  publish_account_dir "$ADD_NAME"
+
+  printf 'ACCOUNT=ADDED\n'
+  printf 'NAME=%s\n' "$ADD_NAME"
+  printf 'TYPE=%s\n' "$kind"
+  printf 'ORGANIZATION=%s\n' "$ADD_ORGANIZATION"
+  printf 'PROJECT=%s\n' "$ADD_PROJECT"
+  printf 'ACTIVE=false\n'
+}
+
 cmd_auth_list() {
   (($# == 0)) || auth_usage_die "auth list accepts no arguments"
   auth_adopt_legacy
@@ -1904,6 +2024,10 @@ cmd_auth_list() {
 cmd_auth() {
   local subcommand="${1:-}"
   case "$subcommand" in
+    add)
+      shift
+      cmd_auth_add "$@"
+      ;;
     list)
       shift
       cmd_auth_list "$@"

@@ -2604,6 +2604,7 @@ AUTH_KEY_LEGACY='fake-legacy-key-0001'
 AUTH_KEY_ME='fake-me-key-0002'
 AUTH_KEY_ACME='fake-acme-key-0003'
 AUTH_KEY_OTHER='fake-other-key-0004'
+AUTH_KEY_STDIN='fake-stdin-key-0005'
 AUTH_KEY_ROTATED='fake-rotated-key-0006'
 AUTH_ORG='org-AuthTestOrg0123456789'
 AUTH_PROJ='proj_AuthTestProj0123456789'
@@ -2877,6 +2878,240 @@ assert_regular_file 'commands outside auth keep the legacy key a regular file' \
   "$AUTH_HOME/.env.auth" "$AUTH_KEY_ROTATED"
 assert_absent 'commands outside auth create no accounts directory' \
   "$AUTH_HOME/accounts"
+
+# --- auth: add ---------------------------------------------------------------
+auth_reset
+auth_cli auth add personal --name me --api-key "$AUTH_KEY_ME"
+assert_eq 'add personal prints the receipt' \
+  $'0|ACCOUNT=ADDED\nNAME=me\nTYPE=personal\nORGANIZATION=\nPROJECT=\nACTIVE=false' \
+  "$RC|$OUTPUT"
+assert_regular_file 'add personal stores the key' \
+  "$AUTH_HOME/accounts/me/api-key" "$AUTH_KEY_ME"
+assert_absent 'add personal stores no team scope' \
+  "$AUTH_HOME/accounts/me/team-scope"
+assert_eq 'add keeps the state home private' '700' "$(file_mode "$AUTH_HOME")"
+assert_eq 'add keeps the accounts directory private' '700' \
+  "$(file_mode "$AUTH_HOME/accounts")"
+assert_eq 'add makes the account directory private' '700' \
+  "$(file_mode "$AUTH_HOME/accounts/me")"
+assert_eq 'add makes the key file private' '600' \
+  "$(file_mode "$AUTH_HOME/accounts/me/api-key")"
+assert_eq 'add leaves only the account in accounts' 'me' \
+  "$(ls -A "$AUTH_HOME/accounts")"
+assert_absent 'add never activates the account' "$AUTH_HOME/.env.auth"
+assert_absent 'add personal never links a team scope' \
+  "$AUTH_HOME/.env.team-scope"
+
+auth_cli auth add team --project "$AUTH_PROJ" --api-key "$AUTH_KEY_ACME" \
+  --organization "$AUTH_ORG" --name acme
+assert_eq 'add team prints the receipt and accepts any option order' \
+  $'0|ACCOUNT=ADDED\nNAME=acme\nTYPE=team\nORGANIZATION='"$AUTH_ORG"$'\nPROJECT='"$AUTH_PROJ"$'\nACTIVE=false' \
+  "$RC|$OUTPUT"
+assert_regular_file 'add team stores the key' \
+  "$AUTH_HOME/accounts/acme/api-key" "$AUTH_KEY_ACME"
+assert_regular_file 'add team stores the two-line scope' \
+  "$AUTH_HOME/accounts/acme/team-scope" \
+  $'organization='"$AUTH_ORG"$'\nproject='"$AUTH_PROJ"
+assert_eq 'add team makes the account directory private' '700' \
+  "$(file_mode "$AUTH_HOME/accounts/acme")"
+assert_eq 'add team makes the key file private' '600' \
+  "$(file_mode "$AUTH_HOME/accounts/acme/api-key")"
+assert_eq 'add team makes the scope file private' '600' \
+  "$(file_mode "$AUTH_HOME/accounts/acme/team-scope")"
+
+auth_cli auth add personal --api-key "$AUTH_KEY_OTHER" --name me2
+assert_contains 'add personal accepts any option order' "$OUTPUT" $'NAME=me2\n'
+
+ln -s accounts/me/api-key "$AUTH_HOME/.env.auth"
+auth_cli auth add team --name acme2 --api-key "$AUTH_KEY_OTHER" \
+  --organization "$AUTH_ORG" --project "$AUTH_PROJ"
+assert_eq 'add keeps another account active' '0|accounts/me/api-key' \
+  "$RC|$(readlink "$AUTH_HOME/.env.auth")"
+assert_absent 'add never links a team scope while another account is active' \
+  "$AUTH_HOME/.env.team-scope"
+rm -f -- "$AUTH_HOME/.env.auth"
+
+auth_accounts_expected="$(ls -A "$AUTH_HOME/accounts")"
+
+# assert_auth_add_rejected <label> <stderr-fragment> <auth add args...>
+assert_auth_add_rejected() {
+  local label="$1" fragment="$2"
+  shift 2
+  auth_cli auth add "$@"
+  assert_eq "$label exits 2 with empty stdout" '2|' "$RC|$OUTPUT"
+  assert_contains "$label names the problem" "$STDERR" "$fragment"
+  assert_eq "$label creates no account" "$auth_accounts_expected" \
+    "$(ls -A "$AUTH_HOME/accounts")"
+}
+
+assert_auth_add_rejected 'add without a kind' 'auth add requires a kind'
+assert_auth_add_rejected 'add with an unknown kind' \
+  'unknown account kind: robot' robot --name x --api-key k
+assert_contains 'a kind error prints a short usage line' "$STDERR" \
+  'usage: glm-agent auth'
+
+assert_auth_add_rejected 'add personal without a name' \
+  'missing required option(s): --name' personal --api-key k
+assert_auth_add_rejected 'add personal without a key' \
+  'missing required option(s): --api-key' personal --name x
+assert_auth_add_rejected 'add personal without any option' \
+  'missing required option(s): --name --api-key' personal
+assert_auth_add_rejected 'add personal with a repeated name' \
+  '--name given more than once' personal --name x --name y --api-key k
+assert_auth_add_rejected 'add personal with a repeated key' \
+  '--api-key given more than once' personal --name x --api-key k --api-key j
+assert_auth_add_rejected 'add personal with --organization' \
+  'unknown option for auth add personal: --organization' \
+  personal --name x --api-key k --organization o
+assert_auth_add_rejected 'add personal with --project' \
+  'unknown option for auth add personal: --project' \
+  personal --name x --api-key k --project p
+assert_auth_add_rejected 'add personal with an unknown option' \
+  'unknown option for auth add personal: --force' \
+  personal --name x --api-key k --force
+assert_auth_add_rejected 'add personal with a positional argument' \
+  'accepts no positional arguments: extra' personal --name x --api-key k extra
+assert_auth_add_rejected 'add personal with an empty name' \
+  '--name must not be empty' personal --name '' --api-key k
+assert_auth_add_rejected 'add personal with an empty key' \
+  '--api-key must not be empty' personal --name x --api-key ''
+assert_auth_add_rejected 'add personal with a trailing option and no value' \
+  '--api-key requires a value' personal --name x --api-key
+assert_auth_add_rejected 'add personal with an option in place of a value' \
+  '--name requires a value' personal --name --api-key k
+assert_auth_add_rejected 'add personal with a multi-line key' \
+  'API key must be a single line' personal --name x --api-key $'k\nj'
+
+for team_missing in name api-key organization project; do
+  team_args=(--name x --api-key k --organization o --project p)
+  team_remaining=()
+  team_skip=0
+  for team_arg in "${team_args[@]}"; do
+    if ((team_skip)); then
+      team_skip=0
+      continue
+    fi
+    if [[ "$team_arg" == "--$team_missing" ]]; then
+      team_skip=1
+      continue
+    fi
+    team_remaining+=("$team_arg")
+  done
+  assert_auth_add_rejected "add team without --$team_missing" \
+    "missing required option(s): --$team_missing" team "${team_remaining[@]}"
+done
+assert_auth_add_rejected 'add team without any option' \
+  'missing required option(s): --name --api-key --organization --project' team
+assert_auth_add_rejected 'add team with a repeated organization' \
+  '--organization given more than once' \
+  team --name x --api-key k --organization o --organization q --project p
+assert_auth_add_rejected 'add team with a repeated project' \
+  '--project given more than once' \
+  team --name x --api-key k --organization o --project p --project q
+assert_auth_add_rejected 'add team with an empty organization' \
+  '--organization must not be empty' \
+  team --name x --api-key k --organization '' --project p
+assert_auth_add_rejected 'add team with an empty project' \
+  '--project must not be empty' \
+  team --name x --api-key k --organization o --project ''
+assert_auth_add_rejected 'add team with a multi-line organization' \
+  'team organization must be a single line' \
+  team --name x --api-key k --organization $'o\nq' --project p
+assert_auth_add_rejected 'add team with a multi-line project' \
+  'team project must be a single line' \
+  team --name x --api-key k --organization o --project $'p\nq'
+assert_auth_add_rejected 'add team with an unknown option' \
+  'unknown option for auth add team: --force' \
+  team --name x --api-key k --organization o --project p --force
+assert_auth_add_rejected 'add team with a positional argument' \
+  'accepts no positional arguments: extra' \
+  team --name x --api-key k --organization o --project p extra
+
+for bad_name in 'bad name' '-lead' '.lead' 'a/b' '..' 'caf'$'\303\251' $'a\nb'; do
+  assert_auth_add_rejected "add rejects the account name [${bad_name//$'\n'/\\n}]" \
+    'account name' personal --name "$bad_name" --api-key k
+done
+
+assert_auth_add_rejected 'add rejects a duplicate personal name' \
+  'account already exists: me' personal --name me --api-key "$AUTH_KEY_OTHER"
+assert_regular_file 'a duplicate name keeps the stored key' \
+  "$AUTH_HOME/accounts/me/api-key" "$AUTH_KEY_ME"
+assert_auth_add_rejected 'add rejects a duplicate team name' \
+  'account already exists: acme' \
+  team --name acme --api-key "$AUTH_KEY_OTHER" --organization o --project p
+assert_regular_file 'a duplicate team name keeps the stored scope' \
+  "$AUTH_HOME/accounts/acme/team-scope" \
+  $'organization='"$AUTH_ORG"$'\nproject='"$AUTH_PROJ"
+assert_auth_add_rejected 'add rejects a personal name that exists as a team' \
+  'account already exists: acme' \
+  personal --name acme --api-key "$AUTH_KEY_OTHER"
+
+# --api-key - reads one line from stdin so the key stays out of argv.
+printf '%s\n' "$AUTH_KEY_STDIN" >"$TEST_ROOT/auth-stdin"
+{ auth_cli auth add personal --name piped --api-key -; } <"$TEST_ROOT/auth-stdin"
+assert_eq 'add reads the key from stdin' \
+  $'0|ACCOUNT=ADDED\nNAME=piped\nTYPE=personal\nORGANIZATION=\nPROJECT=\nACTIVE=false' \
+  "$RC|$OUTPUT"
+assert_regular_file 'the stdin key is stored without its newline' \
+  "$AUTH_HOME/accounts/piped/api-key" "$AUTH_KEY_STDIN"
+
+printf '%s' "$AUTH_KEY_STDIN" >"$TEST_ROOT/auth-stdin"
+{ auth_cli auth add personal --name piped-bare --api-key -; } \
+  <"$TEST_ROOT/auth-stdin"
+assert_eq 'add accepts a stdin key without a trailing newline' '0' "$RC"
+assert_regular_file 'the unterminated stdin key is stored' \
+  "$AUTH_HOME/accounts/piped-bare/api-key" "$AUTH_KEY_STDIN"
+
+printf '%s\n%s\n' "$AUTH_KEY_STDIN" "$AUTH_KEY_OTHER" >"$TEST_ROOT/auth-stdin"
+{ auth_cli auth add personal --name piped-first --api-key -; } \
+  <"$TEST_ROOT/auth-stdin"
+assert_regular_file 'add reads only the first stdin line' \
+  "$AUTH_HOME/accounts/piped-first/api-key" "$AUTH_KEY_STDIN"
+
+printf '%s\n' "$AUTH_KEY_STDIN" >"$TEST_ROOT/auth-stdin"
+{ auth_cli auth add team --name piped-team --api-key - \
+  --organization "$AUTH_ORG" --project "$AUTH_PROJ"; } <"$TEST_ROOT/auth-stdin"
+assert_eq 'add team reads the key from stdin' '0' "$RC"
+assert_regular_file 'the team stdin key is stored' \
+  "$AUTH_HOME/accounts/piped-team/api-key" "$AUTH_KEY_STDIN"
+
+auth_accounts_expected="$(ls -A "$AUTH_HOME/accounts")"
+{ assert_auth_add_rejected 'add with an empty stdin' 'stdin' \
+  personal --name empty-stdin --api-key -; } </dev/null
+printf '\n' >"$TEST_ROOT/auth-stdin"
+{ assert_auth_add_rejected 'add with a blank stdin line' 'stdin' \
+  personal --name blank-stdin --api-key -; } <"$TEST_ROOT/auth-stdin"
+printf 'k\r\n' >"$TEST_ROOT/auth-stdin"
+{ assert_auth_add_rejected 'add with a CRLF stdin line' \
+  'API key must be a single line' \
+  personal --name crlf-stdin --api-key -; } <"$TEST_ROOT/auth-stdin"
+
+# A failing rename removes the temporary directory.
+auth_reset
+capture env -u ZAI_API_KEY PATH="$quota_mv_bin:$PATH" \
+  GLM_AGENT_HOME="$AUTH_HOME" "$SCRIPT" auth add personal --name doomed \
+  --api-key "$AUTH_KEY_ME"
+AUTH_SEEN+="$OUTPUT"$'\n'"$STDERR"$'\n'
+assert_eq 'add with a failing rename exits 2 with empty stdout' '2|' \
+  "$RC|$OUTPUT"
+assert_contains 'add names the account it could not create' "$STDERR" \
+  'cannot create the account: doomed'
+assert_eq 'add removes its temporary directory on failure' '' \
+  "$(ls -A "$AUTH_HOME/accounts")"
+
+# add runs the legacy migration first and prints its line first.
+auth_reset
+auth_cli api-key "$AUTH_KEY_LEGACY"
+auth_cli auth add personal --name extra --api-key "$AUTH_KEY_ME"
+assert_eq 'add prints MIGRATED_ACCOUNT first' \
+  $'0|MIGRATED_ACCOUNT=personal\nACCOUNT=ADDED\nNAME=extra\nTYPE=personal\nORGANIZATION=\nPROJECT=\nACTIVE=false' \
+  "$RC|$OUTPUT"
+assert_symlink 'add after a migration keeps the migrated account active' \
+  "$AUTH_HOME/.env.auth" 'accounts/personal/api-key'
+auth_cli auth add personal --name personal --api-key "$AUTH_KEY_ME"
+assert_eq 'add rejects the name of the migrated account' '2' "$RC"
+assert_contains 'the migrated name is reported as taken' "$STDERR" \
+  'account already exists: personal'
 
 touch_days_ago() {
   local path="$1" days="$2" epoch stamp
