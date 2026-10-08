@@ -35,6 +35,11 @@ glm-agent - persistent GLM coding worker for agent orchestration
 USAGE
   glm-agent api-key [key]
   glm-agent team-scope [<organization> <project> | --clear]
+  glm-agent auth add personal --name <name> --api-key <key>
+  glm-agent auth add team --name <name> --api-key <key> --organization <org> --project <project>
+  glm-agent auth switch <name>
+  glm-agent auth remove <name>
+  glm-agent auth list
   glm-agent run <prompt>
   glm-agent start [--role <role>] [--model <alias>] [--cwd <directory>] <task>
   glm-agent start --async [--role <role>] [--model <alias>] [--cwd <directory>] <task>
@@ -65,9 +70,9 @@ DESCRIPTION
 COMMANDS
   api-key [key]
       Save the Z.ai API key. With no argument, read it from an interactive
-      hidden prompt so it does not enter shell history. The stored file is
-      the only key source; the ZAI_API_KEY environment variable is never
-      read.
+      hidden prompt so it does not enter shell history. While an account is
+      active, this replaces the key of that account. The stored file is the
+      only key source; the ZAI_API_KEY environment variable is never read.
 
   team-scope [<organization> <project> | --clear]
       Show, save, or clear the team-plan quota scope. quota queries the
@@ -76,6 +81,63 @@ COMMANDS
       The ZAI_QUOTA_ORGANIZATION and ZAI_QUOTA_PROJECT environment
       variables override the stored values one by one. Configuring exactly
       one selector is a configuration error; quota needs both or neither.
+      While an account is active, saving and clearing exit 2 because the
+      scope belongs to the account. Use auth add team instead.
+
+  auth add personal --name <name> --api-key <key>
+  auth add team --name <name> --api-key <key> --organization <org> --project <project>
+      Save a named account in ~/.glm/accounts/<name>/. Every option is
+      required and may appear once, in any order. A name matches
+      [A-Za-z0-9][A-Za-z0-9._-]*. --api-key - reads the key from one line of
+      stdin, so the key stays out of the process list. An existing name is an
+      error. add never changes the active account.
+
+      Output:
+        ACCOUNT=ADDED
+        NAME=<name>
+        TYPE=personal|team
+        ORGANIZATION=<organization-or-empty>
+        PROJECT=<project-or-empty>
+        ACTIVE=false
+
+  auth switch <name>
+      Make an account active. ~/.glm/.env.auth then links to its key. A team
+      account also links ~/.glm/.env.team-scope to its scope; a personal
+      account removes that link. The two links change in two steps,
+      not one atomic step.
+
+      Output:
+        ACCOUNT=ACTIVE
+        NAME=<name>
+        TYPE=personal|team
+
+  auth remove <name>
+      Delete an account. The active account and an unknown account are
+      errors.
+
+      Output:
+        ACCOUNT=REMOVED
+        NAME=<name>
+
+  auth list
+      List the accounts sorted by name.
+
+      Output:
+        ACTIVE_ACCOUNT=<name-or-empty>
+        ACCOUNT_COUNT=<n>
+        ACCOUNT_<i>_NAME=<name>
+        ACCOUNT_<i>_TYPE=personal|team
+        ACCOUNT_<i>_ORGANIZATION=<organization-or-empty>
+        ACCOUNT_<i>_PROJECT=<project-or-empty>
+        ACCOUNT_<i>_ACTIVE=true|false
+
+      Every auth subcommand first adopts a legacy ~/.glm/.env.auth regular
+      file as an account. The account is named team when ~/.glm/.env.team-scope
+      is also a regular file, and personal otherwise. The first output line
+      is then MIGRATED_ACCOUNT=<name>. The adoption refuses to run (exit 2,
+      nothing moved) when that account name exists, when the scope file has no
+      key file, or when .env.auth is a dangling symlink or a symlink that
+      does not point to accounts/<name>/api-key. Other commands never migrate.
 
   run <prompt>
       Run a one-shot diagnostic GLM Claude Code session. This does not create
@@ -149,7 +211,8 @@ COMMANDS
 
     quota
         Query Z.ai's monitor API once and print the credit quota per window.
-        This creates no worker and starts no Claude session. Values are
+        This creates no worker and starts no Claude session. It uses the key
+        and the scope of the active account. Values are
         printed as the server reports them; the glm-agent:quota skill turns
         them into a dispatch decision. The last raw response and curl stderr
         are kept in ~/.glm/quota/response.json and ~/.glm/quota/stderr.log.
@@ -237,8 +300,11 @@ ENVIRONMENT
       hours. Default: 21. 0 turns the cleanup off.
 
 SECURITY
-  ~/.glm is mode 0700 and ~/.glm/.env.auth is mode 0600. The API key is never
-  printed by glm-agent. Worker status output omits the Claude session ID.
+  ~/.glm and each ~/.glm/accounts/<name>/ are mode 0700. The key and
+  team-scope files inside an account are mode 0600. ~/.glm/.env.auth and
+  ~/.glm/.env.team-scope are relative symlinks to the active account. The API
+  key is never printed by glm-agent. Worker status output omits the Claude
+  session ID.
 
   start and send use Claude Code's --dangerously-skip-permissions mode so a
   headless worker can edit files and run verification without an interactive

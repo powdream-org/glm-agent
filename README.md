@@ -61,23 +61,129 @@ role prompts from Markdown files next to the executable on every turn.
 
 ## Configure the API key
 
-`glm-agent api-key` stores the Z.ai API key at `~/.glm/.env.auth` with mode
-`0600`. Run it without an argument. A hidden interactive prompt keeps the key
-out of shell history:
+`glm-agent` stores each Z.ai credential as a named account under
+`~/.glm/accounts/<name>/`. A personal account holds an API key. A team account
+holds an API key and the team's organization and project. One account is
+active at a time, and every command that needs a key uses the active account.
+
+The stored key is the only key source: `glm-agent` never reads the
+`ZAI_API_KEY` environment variable.
+
+Add a personal account. Every option is required:
+
+```bash
+glm-agent auth add personal --name me --api-key "<key>"
+```
+
+Add a team account. [Team plan scope](#team-plan-scope) shows where to find the
+organization and the project:
+
+```bash
+glm-agent auth add team --name acme --api-key "<key>" \
+  --organization "<organization>" --project "<project>"
+```
+
+`auth add` never changes the active account. It prints a receipt:
+
+```text
+ACCOUNT=ADDED
+NAME=acme
+TYPE=team
+ORGANIZATION=<organization>
+PROJECT=<project>
+ACTIVE=false
+```
+
+- Each option is required and may appear once, in any order. There is no
+  default, no prompt, and no `--force`.
+- A name matches `[A-Za-z0-9][A-Za-z0-9._-]*`. An existing name is an error.
+- `--organization` and `--project` exist only for `add team`.
+- A key given as `--api-key "<key>"` can appear in shell history and process
+  listings. `--api-key -` reads one line from stdin instead:
+
+  ```bash
+  glm-agent auth add personal --name me --api-key - < key.txt
+  ```
+
+Make an account active:
+
+```bash
+glm-agent auth switch acme
+```
+
+```text
+ACCOUNT=ACTIVE
+NAME=acme
+TYPE=team
+```
+
+- `~/.glm/.env.auth` is a relative symlink to the active account's key.
+- `~/.glm/.env.team-scope` is a relative symlink to the active account's scope.
+  It does not exist while a personal account is active.
+- The active account name is the `.env.auth` link target. No other file stores
+  it.
+- The two links do not change in one atomic step. See
+  [Known limits](#known-limits).
+
+List the accounts, sorted by name in byte order, and mark the active one:
+
+```bash
+glm-agent auth list
+```
+
+```text
+ACTIVE_ACCOUNT=acme
+ACCOUNT_COUNT=2
+ACCOUNT_1_NAME=acme
+ACCOUNT_1_TYPE=team
+ACCOUNT_1_ORGANIZATION=<organization>
+ACCOUNT_1_PROJECT=<project>
+ACCOUNT_1_ACTIVE=true
+ACCOUNT_2_NAME=me
+ACCOUNT_2_TYPE=personal
+ACCOUNT_2_ORGANIZATION=
+ACCOUNT_2_PROJECT=
+ACCOUNT_2_ACTIVE=false
+```
+
+Remove an account. `auth remove` refuses the active account, so switch first:
+
+```bash
+glm-agent auth remove me
+```
+
+```text
+ACCOUNT=REMOVED
+NAME=me
+```
+
+No `auth` output ever contains a key. `~/.glm/accounts/` and each account
+directory have mode `0700`. The key and scope files have mode `0600`.
+
+`glm-agent api-key [key]` still works. While an account is active, it replaces
+the key of that account and keeps the link. Without an active account, it
+writes a plain `~/.glm/.env.auth` file as before. A hidden interactive prompt
+keeps the key out of shell history:
 
 ```bash
 glm-agent api-key
 ```
 
-This file is the only key source: `glm-agent` never reads the `ZAI_API_KEY`
-environment variable.
+### Upgrade from a single key
 
-Automation can pass the key as an argument. The argument may appear in shell
-history or process listings:
+Earlier versions stored one key in `~/.glm/.env.auth` and an optional scope in
+`~/.glm/.env.team-scope`. Every `auth` subcommand adopts them first.
 
-```bash
-glm-agent api-key "<key>"
-```
+- The account is named `team` when `~/.glm/.env.team-scope` is a regular file,
+  and `personal` otherwise.
+- The key, and the scope for `team`, move into `~/.glm/accounts/<name>/`. Two
+  symlinks replace the old files.
+- The command prints `MIGRATED_ACCOUNT=<name>` as its first output line.
+- The adoption exits 2 and moves nothing when `~/.glm/accounts/<name>` already
+  exists, when `.env.team-scope` is a regular file but `.env.auth` is missing,
+  when `.env.auth` is a dangling symlink, or when `.env.auth` is a symlink
+  that does not point to `accounts/<name>/api-key`.
+- Other commands never migrate.
 
 ## Quick start
 
@@ -340,22 +446,28 @@ keep the last call only.
 
 ### Team plan scope
 
-`quota` queries the personal coding plan by default (`SCOPE=personal`). An
-account on a GLM Team Plan saves the team's organization and project selectors
-once:
+`quota` queries the personal coding plan while a personal account is active
+(`SCOPE=personal`). A team account stores the team's organization and project,
+so `quota` requests the team usage (`SCOPE=team`, `type=2` with Bigmodel
+selector headers). Pass both values to `auth add team` once.
 
-```bash
-glm-agent team-scope <organization> <project>
-```
+Find the two values in the browser:
 
-- `quota` then requests the team usage (`SCOPE=team`, `type=2` with Bigmodel
-  selector headers).
-- Copy the selectors from the request headers of `api/monitor/usage/quota/limit`
-  on the team usage dashboard, in the browser's DevTools.
-- `glm-agent team-scope` without arguments shows the saved scope, and
-  `--clear` clears it.
-- `ZAI_QUOTA_ORGANIZATION` and `ZAI_QUOTA_PROJECT` override the stored values
-  one by one.
+1. Open `https://z.ai/manage-apikey/coding-plan/team/usage-stats` and sign in.
+2. Open DevTools and select the Network tab.
+3. Reload the page and select the `api/monitor/usage/quota/limit` request.
+4. In the request headers, read `Bigmodel-Organization` and `Bigmodel-Project`.
+
+Z.ai's public documentation does not list these two headers. Copy only these
+two header values. Never copy the cookie or the token.
+
+- `glm-agent team-scope` without arguments shows the scope of the active
+  account.
+- `team-scope <organization> <project>` and `team-scope --clear` exit 2 while
+  an account is active, because the scope belongs to the account. Run
+  `glm-agent auth add team ...` instead.
+- `ZAI_QUOTA_ORGANIZATION` and `ZAI_QUOTA_PROJECT` override the account's
+  values one by one.
 - Configuring exactly one selector is a setup error.
 
 ### Decision rows
@@ -545,6 +657,12 @@ Blocks follow `GLM_VERDICT`:
 - `files_changed` counts an untracked directory as one entry. It does not
   detect further edits to a file that was already modified when the worker
   started.
+- `auth switch` replaces `~/.glm/.env.auth` and `~/.glm/.env.team-scope` in two
+  separate renames. The two links do not change in one atomic step. A command
+  that reads both links during a switch can pair the key of one account with
+  the scope of the other.
+- A worker `send` uses the account that is active at that moment, not the
+  account that was active at `start`.
 
 ## Bridge agents
 
@@ -586,7 +704,12 @@ uses `haiku` for `glm-agent:explorer` and `sonnet` for
 
 | Command | What it does |
 | --- | --- |
-| `api-key [key]` | Store a Z.ai API key, or prompt for it securely. |
+| `api-key [key]` | Store a Z.ai API key, or prompt for it securely. While an account is active, it replaces that account's key. |
+| `auth add personal --name <name> --api-key <key>` | Save a personal account without activating it. |
+| `auth add team --name <name> --api-key <key> --organization <org> --project <project>` | Save a team account without activating it. |
+| `auth switch <name>` | Make an account active. |
+| `auth remove <name>` | Delete an account that is not active. |
+| `auth list` | List the accounts and mark the active one. |
 | `run <prompt>` | Run a one-shot diagnostic session without creating a worker. |
 | `start [--role <role>] [--model <alias>] [--cwd <dir>] <task>` | Create a persistent worker and execute turn 1. |
 | `start --async ... <task>` | Create a worker and return its RUNNING receipt before provider completion. |
@@ -600,7 +723,7 @@ uses `haiku` for `glm-agent:explorer` and `sonnet` for
 | `list` | List known workers. |
 | `close <worker-id>` | Prevent further sends while preserving all worker files. |
 | `quota` | Print the Z.ai credit quota per window, outside any worker and any Claude session. |
-| `team-scope [<organization> <project> \| --clear]` | Show, save, or clear the team-plan quota selectors used by `quota`. |
+| `team-scope [<organization> <project> \| --clear]` | Show the team-plan quota selectors used by `quota`. Saving and clearing work only without an active account. |
 | `--help` | Show the complete CLI and worker contract. |
 | `--version` | Print the wrapper version. |
 
@@ -668,7 +791,7 @@ These environment variables change the defaults:
 | `GLM_SYSTEM_PROMPT_FILE` | Names the system prompt Markdown file; the default is `system-prompt.md` next to the executable |
 | `GLM_ROLE_PROMPTS_DIR` | Names the directory with `explorer.md` and `general-purpose.md`; the default is `prompts/` next to the executable |
 | `GLM_WORKER_RETENTION_DAYS` | Sets how many days a finished worker is kept after its last activity; the default is `21`, and `0` turns the cleanup off |
-| `ZAI_QUOTA_ORGANIZATION`, `ZAI_QUOTA_PROJECT` | Override the stored team-scope selectors one by one |
+| `ZAI_QUOTA_ORGANIZATION`, `ZAI_QUOTA_PROJECT` | Override the active account's team-scope selectors one by one |
 | `GLM_DISPATCH_CLI` | Replaces the CLI path in `glm-dispatch`; it exists for the tests |
 
 ## Security
@@ -683,13 +806,17 @@ in repositories you trust.
   orchestrator must verify the working tree for unexpected changes.
 - The wrapper never prints the API key, and `status` does not expose the Claude
   session ID.
-- `~/.glm` has mode `0700` and `~/.glm/.env.auth` has mode `0600`.
+- `~/.glm` and each `~/.glm/accounts/<name>/` have mode `0700`. The key and
+  scope files inside an account have mode `0600`. `~/.glm/.env.auth` and
+  `~/.glm/.env.team-scope` are symlinks to the active account.
+- `auth add --api-key "<key>"` puts the key in the process argument list. Use
+  `--api-key -` to read it from stdin.
 - Keep `~/.glm`, captured worker files, and shell output that may contain
   private task data out of commits.
 - `quota` passes the API key to `curl` as a header read from stdin
   (`curl -H @-`).
   - The key never appears in a process argument list.
-  - Saved team-scope selectors travel in the same stdin header block.
+  - The active team account's selectors travel in the same stdin header block.
 - `~/.glm/quota/` stores only the response body and curl's stderr.
 
 ## Development

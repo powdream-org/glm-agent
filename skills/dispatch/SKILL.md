@@ -179,6 +179,6 @@ Log every dispatch in the work log (the ledger).
 
 - Do not retype the brief into the command. Pass the file with `--task-file`.
 - Do not wait with `sleep`, `while` or `until` loops, or file watching. Use `--wait` or `pending`.
-- Do not open or print `~/.glm/.env.auth` or `~/.glm/.env.team-scope`. Only the CLI reads them.
+- Do not open or print `~/.glm/.env.auth`, `~/.glm/.env.team-scope`, or anything under `~/.glm/accounts/`. Only the CLI reads them.
 - Do not record a worker result as GLM work without its `GLM_RECEIPT` line. Quote the line next to the result.
 - Do not `close` a running worker. `cancel` it first.

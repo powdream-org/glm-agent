@@ -19,7 +19,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/glm-agent" quota
 
 The command makes one read-only request to Z.ai and prints `KEY=VALUE` lines:
 `QUOTA_STATUS` (`OK` or `INVALID`), `SCOPE` (`personal` or `team`, depending
-on whether a team scope was configured with `glm-agent team-scope`),
+on whether the active account is a personal or a team account),
 `PLAN_LEVEL`, `LIMIT_COUNT`, then for each
 limit `n` the fields `LIMIT_n_TYPE`, `LIMIT_n_WINDOW`, `LIMIT_n_TOTAL`,
 `LIMIT_n_USED`, `LIMIT_n_REMAINING`, `LIMIT_n_USED_PERCENT`, and

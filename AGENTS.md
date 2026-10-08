@@ -61,8 +61,18 @@ Preserve these unless the requested change explicitly revises the contract:
 - API keys and Claude session IDs must not appear in normal stdout.
 - `quota` passes the API key to `curl` only as a stdin header (`-H @-`); it
   never appears in argv, stdout, stderr, or files. Team-scope selectors share
-  that stdin header block and are stored in `~/.glm/.env.team-scope` (mode
-  0600); `quota` uses the team plan only when both selectors are configured.
+  that stdin header block. They come from the active team account's
+  `team-scope` file (mode 0600), which `~/.glm/.env.team-scope` links to;
+  `quota` uses the team plan only when both selectors are configured.
+- Credentials live in named accounts under `~/.glm/accounts/<name>/`:
+  `api-key`, plus `team-scope` for a team account (directory mode 0700, files
+  mode 0600). `~/.glm/.env.auth` is a relative symlink to the active
+  account's `api-key`. `~/.glm/.env.team-scope` is a relative symlink to its
+  `team-scope` and does not exist while a personal account is active. The
+  active account name is the `.env.auth` link target; no other file stores it.
+  `load_api_key` and `load_team_scope` read the two link paths unchanged.
+- Only `auth` subcommands migrate a legacy regular `~/.glm/.env.auth` into an
+  account, and `auth add` never changes the active account.
 - `system-prompt.md` is read directly on every turn; it is not duplicated in
   the Bash source.
 
@@ -81,9 +91,10 @@ API_TIMEOUT_MS=3000000
 ```
 
 Unset inherited `CLAUDECODE` before invoking Claude. The default Claude alias
-is `sonnet`. Authentication is stored at `~/.glm/.env.auth`, unless
-`GLM_AGENT_HOME` changes the state root, and the key must never be logged.
-The stored file is the only key source; the `ZAI_API_KEY` environment
+is `sonnet`. Authentication is stored in the active account:
+`~/.glm/.env.auth` is a relative symlink to `~/.glm/accounts/<name>/api-key`,
+unless `GLM_AGENT_HOME` changes the state root, and the key must never be
+logged. The stored file is the only key source; the `ZAI_API_KEY` environment
 variable is never read and is stripped from the Claude process environment.
 
 ## Implementation rules

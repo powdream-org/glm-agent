@@ -134,6 +134,27 @@ for layout_entry in scripts/glm-dispatch 'scripts/lib/dispatch-' tests/test_disp
   tests/dispatch/ skills/dispatch/SKILL.md 'bash tests/test_dispatch.sh'; do
   assert_contains "AGENTS.md mentions $layout_entry" "$agents_md" "$layout_entry"
 done
+for auth_phrase in 'glm-agent auth add personal --name' \
+  'glm-agent auth add team --name' 'glm-agent auth switch' \
+  'glm-agent auth remove' 'glm-agent auth list' '--api-key -' \
+  'MIGRATED_ACCOUNT' \
+  'https://z.ai/manage-apikey/coding-plan/team/usage-stats' \
+  'api/monitor/usage/quota/limit' 'Bigmodel-Organization' \
+  'Bigmodel-Project' 'one atomic step' \
+  'uses the account that is active at that moment'; do
+  assert_contains "README documents $auth_phrase" "$readme" "$auth_phrase"
+done
+for auth_row in "| \`auth add personal --name <name> --api-key <key>\` |" \
+  "| \`auth add team --name <name> --api-key <key> --organization <org> --project <project>\` |" \
+  "| \`auth switch <name>\` |" "| \`auth remove <name>\` |" "| \`auth list\` |"; do
+  assert_contains "README command reference lists $auth_row" "$readme" "$auth_row"
+done
+assert_contains 'AGENTS.md describes the account directory' "$agents_md" \
+  '.glm/accounts/<name>/'
+assert_contains 'AGENTS.md describes the .env.auth symlink' "$agents_md" \
+  ".glm/.env.auth\` is a relative symlink"
+assert_contains 'AGENTS.md keeps the ZAI_API_KEY rule' "$agents_md" \
+  "the \`ZAI_API_KEY\` environment"
 
 if [[ -f "$plugin_json" ]]; then
   assert_eq 'plugin name' 'glm-agent' "$(jq -r '.name' "$plugin_json")"
@@ -297,6 +318,8 @@ if [[ -f "$quota_skill" ]]; then
     assert_contains "quota skill decision table mentions $keyword" \
       "$skill_body" "$keyword"
   done
+  assert_contains 'quota skill ties the scope to the active account' \
+    "$skill_body" 'the active account'
 fi
 
 dispatch_skill="$REPO_DIR/skills/dispatch/SKILL.md"
@@ -327,6 +350,8 @@ if [[ -f "$dispatch_skill" ]]; then
     'timeout: 7200000' CronCreate pending attach worker-protocol NO_REPORT quota-exhausted; do
     assert_contains "dispatch skill body mentions $keyword" "$dispatch_body" "$keyword"
   done
+  assert_contains 'dispatch skill forbids opening the account files' \
+    "$dispatch_body" '.glm/accounts/'
   if [[ -f "$quota_rows" ]]; then
     while IFS=$'\t' read -r row keyword; do
       assert_contains "dispatch skill decision table row $row mentions $keyword" \

@@ -436,6 +436,45 @@ assert_contains 'help documents the quota command' "$help_output" \
   $'\n    quota\n'
 assert_contains 'help documents the team-scope command' "$help_output" \
   $'\n  team-scope [<organization> <project> | --clear]\n'
+assert_contains 'help lists auth add personal in the usage synopsis' \
+  "$help_output" \
+  $'\n  glm-agent auth add personal --name <name> --api-key <key>\n'
+assert_contains 'help lists auth add team in the usage synopsis' \
+  "$help_output" \
+  $'\n  glm-agent auth add team --name <name> --api-key <key> --organization <org> --project <project>\n'
+assert_contains 'help lists auth switch in the usage synopsis' "$help_output" \
+  $'\n  glm-agent auth switch <name>\n'
+assert_contains 'help lists auth remove in the usage synopsis' "$help_output" \
+  $'\n  glm-agent auth remove <name>\n'
+assert_contains 'help lists auth list in the usage synopsis' "$help_output" \
+  $'\n  glm-agent auth list\n'
+assert_contains 'help documents auth add personal' "$help_output" \
+  $'\n  auth add personal --name <name> --api-key <key>\n'
+assert_contains 'help documents auth add team' "$help_output" \
+  $'\n  auth add team --name <name> --api-key <key> --organization <org> --project <project>\n'
+assert_contains 'help documents auth switch' "$help_output" \
+  $'\n  auth switch <name>\n'
+assert_contains 'help documents auth remove' "$help_output" \
+  $'\n  auth remove <name>\n'
+assert_contains 'help documents auth list' "$help_output" $'\n  auth list\n'
+assert_contains 'help documents the stdin key' "$help_output" \
+  '--api-key - reads the key'
+assert_contains 'help documents the auth add receipt' "$help_output" \
+  'ACCOUNT=ADDED'
+assert_contains 'help documents the auth switch receipt' "$help_output" \
+  'ACCOUNT=ACTIVE'
+assert_contains 'help documents the auth remove receipt' "$help_output" \
+  'ACCOUNT=REMOVED'
+assert_contains 'help documents the auth list fields' "$help_output" \
+  'ACCOUNT_<i>_NAME'
+assert_contains 'help documents the legacy migration line' "$help_output" \
+  'MIGRATED_ACCOUNT=<name>'
+assert_contains 'help documents the non-atomic link change' "$help_output" \
+  'not one atomic step'
+assert_contains 'help documents the account directory mode' "$help_output" \
+  '.glm/accounts/<name>/'
+assert_not_contains 'help no longer calls .env.auth the key file' \
+  "$help_output" '.glm/.env.auth is mode 0600'
 assert_contains 'help documents the quota scope field' "$help_output" \
   'SCOPE=personal|team'
 assert_contains 'help documents quota status values' "$help_output" \
@@ -3419,6 +3458,23 @@ assert_contains 'the missing key error points to auth add' "$STDERR" \
   'glm-agent auth add'
 assert_contains 'the missing key error points to auth switch' "$STDERR" \
   'glm-agent auth switch <name>'
+
+# --- auth: README examples match the CLI output ------------------------------
+auth_reset
+auth_cli auth add personal --name me --api-key "$AUTH_KEY_ME"
+auth_cli auth add team --name acme --api-key "$AUTH_KEY_ACME" \
+  --organization '<organization>' --project '<project>'
+assert_eq 'README auth add example matches the CLI output' "$OUTPUT" \
+  "$(sed -n '/^ACCOUNT=ADDED$/,/^ACTIVE=false$/p' "$REPO_DIR/README.md")"
+auth_cli auth switch acme
+assert_eq 'README auth switch example matches the CLI output' "$OUTPUT" \
+  "$(sed -n '/^ACCOUNT=ACTIVE$/,/^TYPE=team$/p' "$REPO_DIR/README.md")"
+auth_cli auth list
+assert_eq 'README auth list example matches the CLI output' "$OUTPUT" \
+  "$(sed -n '/^ACTIVE_ACCOUNT=/,/^ACCOUNT_2_ACTIVE=/p' "$REPO_DIR/README.md")"
+auth_cli auth remove me
+assert_eq 'README auth remove example matches the CLI output' "$OUTPUT" \
+  "$(sed -n '/^ACCOUNT=REMOVED$/,/^NAME=me$/p' "$REPO_DIR/README.md")"
 
 # --- auth: no key reaches stdout or stderr -----------------------------------
 for auth_secret in "$AUTH_KEY_LEGACY" "$AUTH_KEY_ME" "$AUTH_KEY_ACME" \
