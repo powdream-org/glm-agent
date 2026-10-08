@@ -773,7 +773,7 @@ The wrapper preserves the verified Z.ai configuration:
 | --- | --- |
 | API endpoint | `https://api.z.ai/api/anthropic` |
 | `haiku` | `glm-5.3-flash[1m]` |
-| `sonnet` | `glm-5.3[1m]` |
+| `sonnet` | `glm-5.3-flash[1m]` |
 | `opus` | `glm-5.3[1m]` |
 | Auto-compact window | `1000000` |
 | API timeout | `3000000` milliseconds |

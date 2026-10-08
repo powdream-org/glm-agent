@@ -516,7 +516,7 @@ assert_eq 'diagnostic run cannot overwrite parent result' 'parent result sentine
 run_log="$(cat "$FAKE_LOG")"
 assert_contains 'run uses Z.ai endpoint' "$run_log" 'base_url=https://api.z.ai/api/anthropic'
 assert_contains 'run maps haiku alias' "$run_log" 'haiku=glm-5.3-flash[1m]'
-assert_contains 'run maps sonnet alias' "$run_log" 'sonnet=glm-5.3[1m]'
+assert_contains 'run maps sonnet alias' "$run_log" 'sonnet=glm-5.3-flash[1m]'
 assert_contains 'run maps opus alias' "$run_log" 'opus=glm-5.3[1m]'
 assert_contains 'run unsets nested Claude marker' "$run_log" 'claudecode=unset'
 
